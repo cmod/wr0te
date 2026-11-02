@@ -43,6 +43,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import unicodedata
 from collections import Counter, defaultdict
 
 # ---------------------------------------------------------------- settings ---
@@ -799,73 +800,131 @@ def esc(s):
     return html.escape(str(s), quote=True)
 
 
-def day_tip(d, x):
+def plural(n, word):
+    return "{:,} {}{}".format(n, word, "" if n == 1 else "s")
+
+
+def active(x):
+    """Minutes with a saved change, rounded to scan windows."""
+    return len(x["slots"]) * SCAN_INTERVAL // 60
+
+
+def text_units(s):
+    """Rough rendered width in Latin letters: CJK and other wide characters count two."""
+    return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in s)
+
+
+def clip(s, units):
+    if text_units(s) <= units:
+        return s
+    out, n = "", 0
+    for ch in s:
+        n += text_units(ch)
+        if n > units - 1:
+            break
+        out += ch
+    return out + "…"
+
+
+def longest_streak(days):
+    best = run = 0
+    prev = None
+    for d in sorted(d for d, x in days.items() if x["added"] > 0):
+        run = run + 1 if prev and d - prev == dt.timedelta(days=1) else 1
+        best, prev = max(best, run), d
+    return best
+
+
+def day_tip(d, x, today):
+    head = ("Today · " if d == today else "") + d.strftime("%a %b %-d, %Y")
     if not x or not (x["added"] or x["removed"] or x["moved"] or x["pasted"]):
-        return "%s — no writing" % d.strftime("%a %b %-d, %Y")
-    parts = ["%s" % d.strftime("%a %b %-d, %Y"),
-             "+{:,} / −{:,} words".format(x["added"], x["removed"])]
+        return head + "\nNo writing"
+    parts = [head, plural(x["added"], "word") + " written"]
+    if x["removed"]:
+        parts.append("{:,} removed".format(x["removed"]))
     if x["cjk"]:
         parts.append("incl. {:,} CJK characters".format(x["cjk"]))
     if x["moved"] or x["pasted"]:
-        parts.append("not counted: {:,} moved · {:,} pasted".format(x["moved"], x["pasted"]))
-    parts.append("%d file%s · ~%s active" % (len(x["files"]), "" if len(x["files"]) == 1 else "s",
-                                              fmt_minutes(len(x["slots"]) * SCAN_INTERVAL // 60)))
+        parts.append("Not counted: {:,} moved · {:,} pasted".format(x["moved"], x["pasted"]))
+    parts.append("%s · about %s" % (plural(len(x["files"]), "file"), fmt_minutes(active(x))))
     return "\n".join(parts)
 
 
+def scroller(svg, min_width, end=False):
+    """Charts keep a readable size in narrow windows and scroll sideways instead of shrinking."""
+    return '<div class="scroll"%s><div style="min-width:%dpx">%s</div></div>' % (
+        " data-end" if end else "", min_width, svg)
+
+
 def svg_daily(days, today, n=90):
-    W, H, L, R, T, B = 960, 260, 48, 8, 12, 24
+    W, H, L, R, T, B = 960, 260, 48, 8, 14, 28
     pw, ph = W - L - R, H - T - B
     seq = [today - dt.timedelta(days=i) for i in range(n - 1, -1, -1)]
     adds = [days.get(d, {}).get("added", 0) for d in seq]
     rems = [days.get(d, {}).get("removed", 0) for d in seq]
-    step = nice_step(max(adds + [1]))
-    top = step * max(1, -(-max(adds + [1]) // step))
-    bstep = step
-    bot = bstep * (-(-max(rems + [0]) // bstep)) if max(rems + [0]) else 0
-    bot = min(bot, top)  # deletions are clipped at the same scale; tooltip has the true value
-    scale = ph / (top + bot)
+    peak = max(adds + [DAILY_GOAL, 1])
+    step = nice_step(peak)
+    top = step * -(-peak // step)
+    # Removed words hang below the line, scaled like the rest but never taking more than a quarter
+    # of the height; the tooltip and table have the true value.
+    rmax = max(rems)
+    below = min(0.25, rmax / (top + rmax)) if rmax else 0
+    scale = ph * (1 - below) / top
     y0 = T + top * scale
+    floor = ph * below / scale
     slot = pw / n
     bw = min(24, slot - 2)
-    out = ['<svg viewBox="0 0 %d %d" class="chart" role="img" aria-label="Words added and removed per day, last %d days">' % (W, H, n)]
-    v = 0
-    while v <= top:
+    best = max(range(n), key=lambda i: adds[i])
+    summary = "Words written per day, last %d days. Best day: %s on %s. Today: %s." % (
+        n, "{:,}".format(adds[best]), seq[best].strftime("%b %-d"), "{:,}".format(adds[-1]))
+    if DAILY_GOAL:
+        summary += " Goal: {:,}.".format(DAILY_GOAL)
+    out = ['<svg viewBox="0 0 %d %d" class="chart" role="img" aria-label="%s">' % (W, H, esc(summary))]
+    for v in range(0, top + 1, step):
         y = y0 - v * scale
         out.append('<line x1="%d" x2="%d" y1="%.1f" y2="%.1f" class="grid"/>' % (L, W - R, y, y))
-        out.append('<text x="%d" y="%.1f" class="tick" text-anchor="end">%s</text>' % (L - 6, y + 4, fmt_tick(v)))
-        v += step
-    if bot:
-        y = y0 + bot * scale
-        out.append('<line x1="%d" x2="%d" y1="%.1f" y2="%.1f" class="grid"/>' % (L, W - R, y, y))
-        out.append('<text x="%d" y="%.1f" class="tick" text-anchor="end">−%s</text>' % (L - 6, y + 4, fmt_tick(bot)))
+        out.append('<text x="%d" y="%.1f" class="tick" text-anchor="end">%s</text>' % (L - 8, y + 4, fmt_tick(v)))
+    if rmax:
+        out.append('<text x="%d" y="%.1f" class="tick" text-anchor="end">−%s</text>'
+                   % (L - 8, y0 + floor * scale, fmt_tick(int(floor))))
     for i, d in enumerate(seq):
         x = L + i * slot + (slot - bw) / 2
-        a, r = adds[i], min(rems[i], bot)
+        a, r = adds[i], min(rems[i], floor)
+        cls = "s1 today" if d == today else "s1"
         if a:
-            out.append('<path d="%s" class="s1"/>' % bar_path(x, y0 - 1, bw, a * scale - 1, True))
+            out.append('<path d="%s" class="%s"/>' % (bar_path(x, y0 - 1, bw, max(2, a * scale - 1), True), cls))
         if r:
-            out.append('<path d="%s" class="s2"/>' % bar_path(x, y0 + 1, bw, r * scale - 1, False))
+            out.append('<path d="%s" class="s2"/>' % bar_path(x, y0 + 1, bw, max(2, r * scale - 1), False))
+        if d == today:
+            out.append('<circle cx="%.1f" cy="%d" r="3" class="today-dot"/>' % (x + bw / 2, T + ph + 9))
         if d.day == 1 or i == 0:
-            out.append('<text x="%.1f" y="%d" class="tick">%s</text>' % (L + i * slot, H - 6, d.strftime("%b %-d")))
+            out.append('<text x="%.1f" y="%d" class="tick">%s</text>' % (L + i * slot, H - 4, d.strftime("%b %-d")))
         out.append('<rect x="%.1f" y="%d" width="%.1f" height="%d" class="hit" data-tip="%s"/>'
-                   % (L + i * slot, T, slot, ph, esc(day_tip(d, days.get(d)))))
+                   % (L + i * slot, T, slot, ph, esc(day_tip(d, days.get(d), today))))
+    if DAILY_GOAL:
+        gy = y0 - DAILY_GOAL * scale
+        out.append('<line x1="%d" x2="%d" y1="%.1f" y2="%.1f" class="goal"/>' % (L, W - R, gy, gy))
+        out.append('<text x="%d" y="%.1f" class="goal-l">goal {:,}</text>'.format(DAILY_GOAL) % (L + 6, gy - 5))
     out.append('<line x1="%d" x2="%d" y1="%.1f" y2="%.1f" class="axis"/>' % (L, W - R, y0, y0))
     out.append("</svg>")
     return "\n".join(out)
 
 
 def svg_calendar(days, today):
-    cell, gap = 12, 2
+    cell, gap = 12, 3
     start = today - dt.timedelta(days=364)
     start -= dt.timedelta(days=(start.weekday() + 1) % 7)  # back to Sunday
     vals = sorted(x["added"] for d, x in days.items() if d >= start and x["added"] > 0)
+
     def q(p):
         return vals[min(len(vals) - 1, int(p * len(vals)))] if vals else 0
     cuts = [q(0.2), q(0.4), q(0.6), q(0.8)]
     weeks = ((today - start).days // 7) + 1
     W, H = 30 + weeks * (cell + gap) + 12, 20 + 7 * (cell + gap)  # room for a month label in the last week
-    out = ['<svg viewBox="0 0 %d %d" class="chart cal" role="img" aria-label="Calendar of words written over the last year">' % (W, H)]
+    written_days = sum(1 for d, x in days.items() if d >= start and x["added"])
+    label = "Words written per day over the last year: %s with writing, best day %s words." % (
+        plural(written_days, "day"), "{:,}".format(vals[-1] if vals else 0))
+    out = ['<svg viewBox="0 0 %d %d" class="chart cal" role="img" aria-label="%s">' % (W, H, esc(label))]
     for i, lab in ((1, "Mon"), (3, "Wed"), (5, "Fri")):
         out.append('<text x="0" y="%d" class="tick">%s</text>' % (20 + i * (cell + gap) + 10, lab))
     d, lastm = start, None
@@ -878,128 +937,242 @@ def svg_calendar(days, today):
             lastm = d.month
         a = days.get(d, {}).get("added", 0)
         lvl = 0 if a == 0 else 1 + sum(1 for c in cuts if a > c)
-        out.append('<rect x="%d" y="%d" width="%d" height="%d" rx="2" class="h%d" data-tip="%s"/>'
-                   % (x, y, cell, cell, lvl, esc(day_tip(d, days.get(d)))))
+        out.append('<rect x="%d" y="%d" width="%d" height="%d" rx="2.5" class="h%d%s" data-tip="%s"/>'
+                   % (x, y, cell, cell, lvl, " today" if d == today else "", esc(day_tip(d, days.get(d), today))))
         d += dt.timedelta(days=1)
     out.append("</svg>")
-    legend = ('<div class="scale"><span>less</span>' +
-              "".join('<i class="h%d"></i>' % i for i in range(6)) + "<span>more</span></div>")
-    return "\n".join(out) + legend
+    ranges = ["No writing", "1–{:,} words".format(cuts[0])]
+    ranges += ["{:,}–{:,} words".format(lo + 1, hi) for lo, hi in zip(cuts, cuts[1:])]
+    ranges.append("More than {:,} words".format(cuts[3]))
+    legend = ('<div class="scale" aria-hidden="true"><span>0</span>' +
+              "".join('<i class="h%d" data-tip="%s"></i>' % (i, esc(r)) for i, r in enumerate(ranges)) +
+              "<span>{:,}</span></div>".format(vals[-1] if vals else 0))
+    return scroller("\n".join(out), W, end=True) + legend
 
 
 def svg_hbars(rows, label):
     """rows: [(name, value, tip)] single series horizontal bars."""
     if not rows:
-        return '<p class="muted">Nothing yet.</p>'
-    rh, L, W = 26, 260, 960
+        return '<p class="empty">Nothing in the last 30 days.</p>'
+    names = [clip(name, 36) for name, _, _ in rows]
+    rh, W = 30, 960
+    L = int(min(300, max(90, 16 + 7.4 * max(text_units(n) for n in names))))
     H = rh * len(rows) + 4
     mx = max(v for _, v, _ in rows) or 1
-    out = ['<svg viewBox="0 0 %d %d" class="chart" role="img" aria-label="%s">' % (W, H, esc(label))]
-    for i, (name, v, tip) in enumerate(rows):
+    aria = "%s: %s." % (label, "; ".join("%s {:,}".format(v) % name for name, v, _ in rows))
+    out = ['<svg viewBox="0 0 %d %d" class="chart" role="img" aria-label="%s">' % (W, H, esc(aria))]
+    for i, ((_, v, tip), short) in enumerate(zip(rows, names)):
         y = i * rh + 4
         w = (W - L - 80) * v / mx
-        short = name if len(name) <= 38 else name[:36] + "…"
-        out.append('<text x="%d" y="%d" class="lab" text-anchor="end">%s</text>' % (L - 10, y + 14, esc(short)))
+        out.append('<text x="%d" y="%d" class="lab" text-anchor="end">%s</text>' % (L - 12, y + 15, esc(short)))
         if w >= 1:
             out.append('<path d="M%d,%d H%.1f Q%.1f,%d %.1f,%d V%d Q%.1f,%d %.1f,%d H%d Z" class="s1"/>'
-                       % (L, y + 2, L + w - 4, L + w, y + 2, L + w, y + 6, y + 14, L + w, y + 18, L + w - 4, y + 18, L))
-        out.append('<text x="%.1f" y="%d" class="val">%s</text>' % (L + w + 6, y + 14, "{:,}".format(v)))
+                       % (L, y + 3, L + w - 4, L + w, y + 3, L + w, y + 7, y + 15, L + w, y + 19, L + w - 4, y + 19, L))
+        out.append('<text x="%.1f" y="%d" class="val">%s</text>' % (L + w + 8, y + 15, "{:,}".format(v)))
         out.append('<rect x="0" y="%d" width="%d" height="%d" class="hit" data-tip="%s"/>' % (y - 2, W, rh, esc(tip)))
     out.append("</svg>")
-    return "\n".join(out)
+    return scroller("\n".join(out), 600)
 
 
-def svg_hours(changes, today, n=90):
-    W, H, L, R, T, B = 960, 160, 48, 8, 12, 24
-    pw, ph = W - L - R, H - T - B
+def hour_totals(changes, today, n=90):
+    """Words written in each clock hour over the last n days, in writing-day order (from DAY_START_HOUR)."""
     since = today - dt.timedelta(days=n)
     hours = [0] * 24
     for c in changes:
         if writing_day(c["m"]) > since:
             hours[dt.datetime.fromtimestamp(c["m"]).hour] += written(c)
-    step = nice_step(max(hours + [1]), 3)
-    top = step * max(1, -(-max(hours + [1]) // step))
+    return [((DAY_START_HOUR + i) % 24, hours[(DAY_START_HOUR + i) % 24]) for i in range(24)]
+
+
+def svg_hours(hours, n=90):
+    W, H, L, R, T, B = 960, 170, 48, 8, 12, 26
+    pw, ph = W - L - R, H - T - B
+    peak = max([v for _, v in hours] + [1])
+    step = nice_step(peak, 3)
+    top = step * -(-peak // step)
     scale = ph / top
     slot = pw / 24
     bw = min(24, slot - 2)
     y0 = T + ph
-    out = ['<svg viewBox="0 0 %d %d" class="chart" role="img" aria-label="Words written by hour of day">' % (W, H)]
-    v = 0
-    while v <= top:
+    busiest = max(hours, key=lambda hv: hv[1])
+    label = "Words written by hour of day, last %d days. Most in the %02d:00 hour: %s." % (
+        n, busiest[0], "{:,}".format(busiest[1]))
+    out = ['<svg viewBox="0 0 %d %d" class="chart" role="img" aria-label="%s">' % (W, H, esc(label))]
+    for v in range(0, top + 1, step):
         y = y0 - v * scale
         out.append('<line x1="%d" x2="%d" y1="%.1f" y2="%.1f" class="grid"/>' % (L, W - R, y, y))
-        out.append('<text x="%d" y="%.1f" class="tick" text-anchor="end">%s</text>' % (L - 6, y + 4, fmt_tick(v)))
-        v += step
-    for h in range(24):
-        x = L + h * slot + (slot - bw) / 2
-        if hours[h]:
-            out.append('<path d="%s" class="s1"/>' % bar_path(x, y0, bw, hours[h] * scale, True))
-        if h % 3 == 0:
-            out.append('<text x="%.1f" y="%d" class="tick" text-anchor="middle">%02d:00</text>' % (L + h * slot + slot / 2, H - 6, h))
+        out.append('<text x="%d" y="%.1f" class="tick" text-anchor="end">%s</text>' % (L - 8, y + 4, fmt_tick(v)))
+    for i, (h, v) in enumerate(hours):
+        x = L + i * slot + (slot - bw) / 2
+        if v:
+            out.append('<path d="%s" class="s1"/>' % bar_path(x, y0, bw, max(2, v * scale), True))
+        if i % 3 == 0:
+            out.append('<text x="%.1f" y="%d" class="tick" text-anchor="middle">%02d:00</text>'
+                       % (L + i * slot + slot / 2, H - 6, h))
         out.append('<rect x="%.1f" y="%d" width="%.1f" height="%d" class="hit" data-tip="%s"/>'
-                   % (L + h * slot, T, slot, ph, esc("%02d:00–%02d:59\n+{:,} words (last %d days)".format(hours[h]) % (h, h, n))))
+                   % (L + i * slot, T, slot, ph, esc("%02d:00–%02d:59\n%s written, last %d days"
+                                                     % (h, h, plural(v, "word"), n))))
     out.append('<line x1="%d" x2="%d" y1="%.1f" y2="%.1f" class="axis"/>' % (L, W - R, y0, y0))
     out.append("</svg>")
-    return "\n".join(out)
+    return scroller("\n".join(out), 760)
+
+
+def sessions(changes, gap=1800):
+    """Saves of one file no more than `gap` seconds apart, merged into one writing session."""
+    out, cur = [], {}
+    for c in changes:  # in time order
+        if c["kind"] == "copy":
+            out.append({"path": c["path"], "start": c["m"], "end": c["m"], "w": 0, "r": 0, "mv": 0, "pa": 0,
+                        "note": "copied from another file"})
+            continue
+        if not counted(c) or not (written(c) or removed(c) or c["mv"] or c["pa"]):
+            continue
+        s = cur.get(c["path"])
+        if not s or c["m"] - s["end"] > gap:
+            s = cur[c["path"]] = {"path": c["path"], "start": c["m"], "end": c["m"], "w": 0, "r": 0, "mv": 0,
+                                  "pa": 0, "note": "new file" if c["kind"] == "new" else ""}
+            out.append(s)
+        s["end"] = c["m"]
+        s["w"] += written(c)
+        s["r"] += removed(c)
+        s["mv"] += c["mv"]
+        s["pa"] += c["pa"]
+    for s in out:
+        bits = [s["note"]] if s["note"] else []
+        if s["mv"]:
+            bits.append("{:,} moved".format(s["mv"]))
+        if s["pa"]:
+            bits.append("{:,} pasted".format(s["pa"]))
+        s["note"] = " · ".join(bits)
+    return out
+
+
+def table(caption, cols, rows, opt=()):
+    """cols: [(label, kind)], kind "n" (number), "p" (path), "t" (time) or ""; rows hold escaped cells.
+    Columns listed in opt are hidden in narrow windows."""
+    def cls(i):
+        c = [k for k in (cols[i][1], "opt" if i in opt else "") if k]
+        return ' class="%s"' % " ".join(c) if c else ""
+    h = ['<table><caption class="sr">%s</caption><thead><tr>' % esc(caption)]
+    h += ['<th scope="col"%s>%s</th>' % (cls(i), esc(c)) for i, (c, _) in enumerate(cols)]
+    h.append("</tr></thead><tbody>")
+    for r in rows:
+        h.append("<tr>" + "".join("<td%s>%s</td>" % (cls(i), v) for i, v in enumerate(r)) + "</tr>")
+    h.append("</tbody></table>")
+    return "".join(h)
+
+
+def num(v):
+    return "{:,}".format(v) if v else '<span class="none">—</span>'
 
 
 CSS = """
-.viz-root{color-scheme:light;--surface:#fcfcfb;--page:#f9f9f7;--ink:#0b0b0b;--ink2:#52514e;--muted:#898781;
---grid:#e1e0d9;--axis:#c3c2b7;--border:rgba(11,11,11,.10);--s1:#2a78d6;--s2:#eb6834;
---h0:#efeee9;--h1:#cde2fb;--h2:#9ec5f4;--h3:#5598e7;--h4:#256abf;--h5:#104281}
-@media (prefers-color-scheme:dark){.viz-root{color-scheme:dark;--surface:#1a1a19;--page:#0d0d0d;--ink:#f0efec;
---ink2:#c3c2b7;--muted:#898781;--grid:#2c2c2a;--axis:#383835;--border:rgba(255,255,255,.10);--s1:#3987e5;--s2:#d95926;
---h0:#262624;--h1:#104281;--h2:#1c5cab;--h3:#2a78d6;--h4:#5598e7;--h5:#9ec5f4}}
+:root{color-scheme:light dark;--page:#f6f3ee;--surface:#fffdf9;--ink:#211d19;--ink2:#58524a;--muted:#6b645b;
+--rule:#e3ddd3;--grid:#ebe5dc;--axis:#c9c1b4;--s1:#c2562f;--s2:#8f877b;--focus:#c2562f;
+--h0:#e4ddd1;--h1:#ebb293;--h2:#e3946f;--h3:#cc6943;--h4:#a84826;--h5:#743016}
+@media (prefers-color-scheme:dark){:root{--page:#14120f;--surface:#1c1915;--ink:#f1ece4;--ink2:#c7bfb3;
+--muted:#a39a8d;--rule:#2d2924;--grid:#28241f;--axis:#3e3830;--s1:#e47c55;--s2:#80776b;--focus:#e47c55;
+--h0:#2b2722;--h1:#5c301d;--h2:#7a3a22;--h3:#b2522e;--h4:#de7a52;--h5:#f4b494}}
 *{box-sizing:border-box}
-body{margin:0;background:var(--page);color:var(--ink);font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif}
-main{max-width:1000px;margin:0 auto;padding:32px 20px 64px}
-h1{font-size:15px;font-weight:600;margin:0 0 4px}
-h2{font-size:14px;font-weight:600;margin:0 0 2px}
-.sub,.muted{color:var(--ink2);font-size:13px}
-.card{background:var(--surface);border:1px solid var(--border);border-radius:12px;padding:18px 20px;margin:16px 0}
-.hero{font-size:56px;font-weight:600;line-height:1.1;margin:6px 0 2px}
-.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-top:16px}
-.tile .l{color:var(--ink2);font-size:13px}.tile .v{font-size:22px;font-weight:600}
-.chart{width:100%;height:auto;display:block;margin-top:12px}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--page);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
+-webkit-font-smoothing:antialiased}
+::selection{background:var(--h1);color:var(--ink)}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px;border-radius:3px}
+a{color:inherit;text-decoration-color:var(--axis);text-underline-offset:3px}
+a:hover{text-decoration-color:var(--s1)}
+main{max-width:1000px;margin:0 auto;padding:40px 20px 72px}
+header{margin-bottom:24px}
+h1{font-size:24px;line-height:1.2;font-weight:650;letter-spacing:-.01em;margin:0}
+h2{font-size:18px;line-height:1.3;font-weight:600;margin:0 0 4px}
+.sub{color:var(--ink2);font-size:14px;margin:4px 0 0;max-width:68ch}
+.n,.num,.stats dd,td.n{font-variant-numeric:tabular-nums}
+.now{background:var(--surface);border:1px solid var(--rule);border-radius:16px;padding:28px 28px 24px}
+.big{margin:0;font-weight:500;font-size:20px;color:var(--ink2);line-height:1.1}
+.big .num{display:block;font-size:64px;font-weight:650;letter-spacing:-.02em;color:var(--ink);margin-bottom:6px}
+.big.quiet{font-size:30px;font-weight:600;color:var(--ink)}
+.goalbar{margin:20px 0 6px;height:6px;border-radius:3px;background:var(--h0);overflow:hidden;max-width:480px}
+.goalbar i{display:block;height:100%;background:var(--s1);border-radius:3px}
+.goaltext{color:var(--ink2);font-size:14px;margin:0}
+.pieces{margin:16px 0 0;font-size:16px}
+.detail{color:var(--ink2);font-size:14px;margin:6px 0 0}
+abbr{text-decoration:underline dotted var(--axis);text-underline-offset:3px;cursor:help}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:20px;margin:28px 0 0;
+padding-top:20px;border-top:1px solid var(--rule)}
+.stats div{margin:0}.stats dt{color:var(--ink2);font-size:13px}
+.stats dd{margin:2px 0 0;font-size:24px;font-weight:600;letter-spacing:-.01em}
+.stats small{display:block;color:var(--muted);font-size:13px;font-weight:400;letter-spacing:0;margin-top:2px}
+section.block{margin-top:48px;padding-top:28px;border-top:1px solid var(--rule)}
+.legend{display:flex;flex-wrap:wrap;gap:6px 18px;color:var(--ink2);font-size:13px;margin-top:12px}
+.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+.legend i.dash{height:0;border-top:2px dashed var(--ink2);border-radius:0;vertical-align:3px;width:14px}
+.legend i.dot{border-radius:50%;background:var(--ink)}
+.scroll{overflow-x:auto;margin-top:14px;scrollbar-width:thin;scrollbar-color:var(--axis) transparent}
+.chart{width:100%;height:auto;display:block}
 .chart text{font-size:11px}
-.tick{fill:var(--muted);font-variant-numeric:tabular-nums}.lab{fill:var(--ink2);font-size:12px!important}
-.val{fill:var(--ink);font-size:12px!important;font-variant-numeric:tabular-nums}
+.tick{fill:var(--muted)}.lab{fill:var(--ink2);font-size:12.5px!important}
+.val{fill:var(--ink);font-size:12.5px!important;font-variant-numeric:tabular-nums}
 .grid{stroke:var(--grid);stroke-width:1}.axis{stroke:var(--axis);stroke-width:1}
-.s1{fill:var(--s1)}.s2{fill:var(--s2)}.hit{fill:transparent}.hit:hover{fill:var(--ink);fill-opacity:.04}
+.goal{stroke:var(--ink2);stroke-width:1.25;stroke-dasharray:4 4;opacity:.75}
+.goal-l{fill:var(--ink2);font-size:11px;paint-order:stroke;stroke:var(--page);stroke-width:3px}
+.s1{fill:var(--s1)}.s2{fill:var(--s2)}
+.chart .s1.today{stroke:var(--ink);stroke-width:1.5}.today-dot{fill:var(--ink)}
+.hit{fill:transparent}.hit:hover{fill:var(--ink);fill-opacity:.07}
 .h0{fill:var(--h0)}.h1{fill:var(--h1)}.h2{fill:var(--h2)}.h3{fill:var(--h3)}.h4{fill:var(--h4)}.h5{fill:var(--h5)}
-.cal rect:hover{stroke:var(--ink);stroke-width:1}
-.scale{display:flex;gap:3px;align-items:center;justify-content:flex-end;color:var(--muted);font-size:11px;margin-top:6px}
-.scale i{width:12px;height:12px;border-radius:2px;display:inline-block}
+.cal rect:hover{stroke:var(--ink);stroke-width:1}.cal rect.today{stroke:var(--ink);stroke-width:1.5}
+.scale{display:flex;gap:4px;align-items:center;justify-content:flex-end;color:var(--muted);font-size:12px;margin-top:8px}
+.scale span{margin:0 4px;font-variant-numeric:tabular-nums}
+.scale i{width:12px;height:12px;border-radius:2.5px;display:inline-block}
 .scale i.h0{background:var(--h0)}.scale i.h1{background:var(--h1)}.scale i.h2{background:var(--h2)}
 .scale i.h3{background:var(--h3)}.scale i.h4{background:var(--h4)}.scale i.h5{background:var(--h5)}
-.legend{display:flex;gap:16px;color:var(--ink2);font-size:12px;margin-top:8px}
-.legend i{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}
-table{width:100%;border-collapse:collapse;font-size:13px;margin-top:10px}
-th{text-align:left;color:var(--ink2);font-weight:500;border-bottom:1px solid var(--grid);padding:6px 8px}
-td{border-bottom:1px solid var(--grid);padding:6px 8px;vertical-align:top}
-td.n,th.n{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}
-td.p{word-break:break-word}
-details summary{cursor:pointer;color:var(--ink2);font-size:13px;margin-top:10px}
-#tip{position:fixed;pointer-events:none;background:var(--surface);color:var(--ink);border:1px solid var(--border);
-border-radius:8px;padding:8px 10px;font-size:12px;white-space:pre-line;box-shadow:0 4px 16px rgba(0,0,0,.12);display:none;z-index:9;max-width:320px}
-#tip b{font-weight:600}
+table{width:100%;border-collapse:collapse;font-size:14px;margin-top:14px}
+th{text-align:left;color:var(--ink2);font-weight:500;font-size:13px;border-bottom:1px solid var(--rule);padding:6px 12px 6px 0}
+td{border-bottom:1px solid var(--grid);padding:8px 12px 8px 0;vertical-align:top}
+th:last-child,td:last-child{padding-right:0}
+th.n,td.n{text-align:right;white-space:nowrap}
+td.p{overflow-wrap:anywhere}
+td.t{white-space:nowrap;color:var(--ink2)}
+td.note{color:var(--ink2)}
+.none{color:var(--muted)}
+.empty{color:var(--ink2);margin:14px 0 0}
+details{margin-top:14px}
+details summary{cursor:pointer;color:var(--ink2);font-size:14px;width:max-content}
+details summary:hover{color:var(--ink)}
+.sr{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap;border:0}
+footer{margin-top:56px;padding-top:20px;border-top:1px solid var(--rule);color:var(--ink2);font-size:13px}
+footer p{max-width:68ch;margin:0 0 6px}
+#tip{position:fixed;pointer-events:none;background:var(--surface);color:var(--ink);border:1px solid var(--rule);
+border-radius:10px;padding:9px 11px;font-size:13px;line-height:1.45;white-space:pre-line;
+box-shadow:0 2px 4px rgba(0,0,0,.08);display:none;z-index:9;max-width:300px}
+#tip b{font-weight:600;display:block;margin-bottom:2px}
+@media (max-width:640px){
+main{padding:28px 16px 56px}
+.now{padding:22px 18px 18px;border-radius:14px}
+.big .num{font-size:52px}
+.stats{grid-template-columns:1fr 1fr;gap:16px}
+.opt{display:none}
+section.block{margin-top:40px}
+}
 """
 
 JS = """
 const tip=document.getElementById('tip');
-document.addEventListener('mousemove',e=>{
-  const t=e.target.closest&&e.target.closest('[data-tip]');
-  if(!t){tip.style.display='none';return}
+function show(t,cx,cy){
   const [h,...rest]=t.dataset.tip.split('\\n');
-  tip.innerHTML='<b></b>';tip.firstChild.textContent=h;
+  tip.textContent='';const b=document.createElement('b');b.textContent=h;tip.appendChild(b);
   if(rest.length){const s=document.createElement('div');s.textContent=rest.join('\\n');tip.appendChild(s)}
   tip.style.display='block';
   const r=tip.getBoundingClientRect();
-  let x=e.clientX+14,y=e.clientY+14;
-  if(x+r.width>innerWidth-8)x=e.clientX-r.width-14;
-  if(y+r.height>innerHeight-8)y=e.clientY-r.height-14;
-  tip.style.left=x+'px';tip.style.top=y+'px';
-});
+  let x=cx+14,y=cy+14;
+  if(x+r.width>innerWidth-8)x=cx-r.width-14;
+  if(y+r.height>innerHeight-8)y=cy-r.height-14;
+  tip.style.left=Math.max(8,x)+'px';tip.style.top=Math.max(8,y)+'px';
+}
+function target(e){return e.target.closest&&e.target.closest('[data-tip]')}
+document.addEventListener('mousemove',e=>{const t=target(e);if(t)show(t,e.clientX,e.clientY);else tip.style.display='none'});
+document.addEventListener('click',e=>{const t=target(e);if(t)show(t,e.clientX,e.clientY);else tip.style.display='none'});
+addEventListener('scroll',()=>{tip.style.display='none'},{passive:true});
+document.querySelectorAll('.scroll[data-end]').forEach(s=>{s.scrollLeft=s.scrollWidth});
 """
 
 
@@ -1008,15 +1181,16 @@ def cmd_report(open_it=False, quiet=False):
     days = daily(changes)
     now = time.time()
     today = writing_day(now)
+    empty_day = {"added": 0, "removed": 0, "files": set(), "slots": set(), "cjk": 0, "moved": 0, "pasted": 0}
+    t = days.get(today, empty_day)
 
     def total(since_days):
         lo = today - dt.timedelta(days=since_days - 1)
         return sum(x["added"] for d, x in days.items() if d >= lo)
 
-    t = days.get(today, {"added": 0, "removed": 0, "files": set(), "slots": set(), "cjk": 0, "moved": 0, "pasted": 0})
     year_start = dt.date(today.year, 1, 1)
     ytd = sum(x["added"] for d, x in days.items() if d >= year_start)
-    active_days_30 = sum(1 for d, x in days.items() if d > today - dt.timedelta(days=30) and x["added"])
+    days_30 = sum(1 for d, x in days.items() if d > today - dt.timedelta(days=30) and x["added"])
 
     # projects & files, last 30 days
     lo = today - dt.timedelta(days=29)
@@ -1029,85 +1203,153 @@ def cmd_report(open_it=False, quiet=False):
         f = fil[c["path"]]
         f[0] += written(c); f[1] += removed(c); f[2] = max(f[2], c["m"]); f[3] = c["w"] + c["k"]
     prow = sorted(proj.items(), key=lambda kv: -kv[1][0])[:12]
-    prow = [(k, v[0], "%s\n+{:,} / −{:,} words · %d file%s (last 30 days)".format(v[0], v[1])
-             % (k, len(v[2]), "" if len(v[2]) == 1 else "s")) for k, v in prow if v[0]]
-    frow = sorted(fil.items(), key=lambda kv: -kv[1][0])[:25]
+    prow = [(k, v[0], "%s\n%s written · {:,} removed\n%s, last 30 days".format(v[1])
+             % (k, plural(v[0], "word"), plural(len(v[2]), "file"))) for k, v in prow if v[0]]
+    frow = [kv for kv in sorted(fil.items(), key=lambda kv: -kv[1][0]) if kv[1][0] or kv[1][1]][:25]
 
-    recent = [c for c in changes if c["kind"] == "copy" or (counted(c) and (written(c) or removed(c) or c["mv"] or c["pa"]))][-60:][::-1]
-    n_files = len(load_json(os.path.join(LOCAL, "state.json"), {}).get("files", {}))  # there now, not ever
+    # what was worked on today, biggest first
+    per = defaultdict(int)
+    for c in changes:
+        if writing_day(c["m"]) == today and written(c):
+            per[c["path"]] += written(c)
+    pieces = [os.path.splitext(os.path.basename(p))[0] for p, _ in sorted(per.items(), key=lambda kv: -kv[1])]
+
+    state = load_json(os.path.join(LOCAL, "state.json"), None)
     machines = sorted({c["by"] for c in changes})
+    meta = [esc(tilde(ROOT))]
+    if isinstance(state, dict) and state.get("files"):
+        meta.append(plural(len(state["files"]), "file"))  # there now, not ever
+    if machines:
+        meta.append(esc(", ".join(machines)))
+    meta.append("updated " + dt.datetime.fromtimestamp(now).strftime("%b %-d, %H:%M"))
 
     h = ['<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">',
          '<meta name="viewport" content="width=device-width,initial-scale=1">',
-         "<title>wr0te — writing</title><style>%s</style></head>" % CSS,
-         '<body class="viz-root"><main>',
-         '<h1>Writing</h1><div class="sub">%s · %s tracked files · machines: %s · updated %s</div>'
-         % (esc(tilde(ROOT)), "{:,}".format(n_files), esc(", ".join(machines) or "—"),
-            dt.datetime.fromtimestamp(now).strftime("%b %-d, %H:%M")),
-         '<section class="card"><div class="muted">Words written today</div>',
-         '<div class="hero">%s</div>' % "{:,}".format(t["added"]),
-         '<div class="muted">−{:,} removed · {} file{} · ~{} active{}</div>'.format(
-             t["removed"], len(t["files"]), "" if len(t["files"]) == 1 else "s",
-             fmt_minutes(len(t["slots"]) * SCAN_INTERVAL // 60),
-             " · not counted: {:,} moved, {:,} pasted".format(t["moved"], t["pasted"]) if t["moved"] or t["pasted"] else ""),
-         '<div class="tiles">']
-    for lab, val in (("Last 7 days", "{:,}".format(total(7))), ("Last 30 days", "{:,}".format(total(30))),
-                     ("This year", "{:,}".format(ytd)), ("Current streak", "%d day%s" % (streak(days, today), "" if streak(days, today) == 1 else "s")),
-                     ("Writing days, last 30", "%d" % active_days_30)):
-        h.append('<div class="tile"><div class="l">%s</div><div class="v">%s</div></div>' % (lab, val))
-    h.append("</div></section>")
+         "<title>%s</title><style>%s</style></head>"
+         % ("%s today · wr0te" % plural(t["added"], "word") if t["added"] else "wr0te", CSS),
+         "<body><main>",
+         '<header><h1>wr0te</h1><p class="sub">%s</p></header>' % " · ".join(meta)]
 
-    h.append('<section class="card"><h2>Daily words, last 90 days</h2>'
-             '<div class="sub">Added above the line, removed below. Text moved from elsewhere in your writing, pasted blocks and copied files aren\'t counted.</div>')
-    h.append('<div class="legend"><span><i style="background:var(--s1)"></i>Added</span>'
-             '<span><i style="background:var(--s2)"></i>Removed</span></div>')
-    h.append(svg_daily(days, today))
-    h.append("<details><summary>Show as table</summary><table><tr><th>Day</th><th class=n>Added</th>"
-             "<th class=n>Removed</th><th class=n>Files</th><th class=n>~Active</th></tr>")
+    # ---- today
+    h.append('<section class="now" aria-label="Today">')
+    if t["added"]:
+        h.append('<h2 class="big"><span class="num">%s</span>%s today</h2>'
+                 % ("{:,}".format(t["added"]), "word" if t["added"] == 1 else "words"))
+    else:
+        yesterday = days.get(today - dt.timedelta(days=1), {}).get("added", 0)
+        h.append('<h2 class="big quiet">No words yet today</h2>')
+        h.append('<p class="detail">Your day started at %d:00.%s</p>' % (
+            DAY_START_HOUR, " Yesterday: %s." % plural(yesterday, "word") if yesterday else ""))
+    if DAILY_GOAL:
+        pct = min(100, 100 * t["added"] // DAILY_GOAL)
+        h.append('<div class="goalbar" role="progressbar" aria-label="Daily goal" aria-valuemin="0" '
+                 'aria-valuemax="%d" aria-valuenow="%d"><i style="width:%d%%"></i></div>'
+                 % (DAILY_GOAL, min(t["added"], DAILY_GOAL), pct))
+        h.append('<p class="goaltext">%s</p>' % (
+            "Goal of {:,} reached".format(DAILY_GOAL) if t["added"] >= DAILY_GOAL
+            else "{:,} to go · goal {:,}".format(DAILY_GOAL - t["added"], DAILY_GOAL)))
+    if pieces:
+        names = ", ".join("<b>%s</b>" % esc(n) for n in pieces[:3])
+        more = " and %d more" % (len(pieces) - 3) if len(pieces) > 3 else ""
+        h.append('<p class="pieces">Worked on %s%s</p>' % (names, more))
+    if t["added"] or t["removed"]:
+        bits = [plural(len(t["files"]), "file"),
+                'about %s <abbr title="Counted in %d-minute windows with a saved change">active</abbr>'
+                % (fmt_minutes(active(t)), SCAN_INTERVAL // 60)]
+        if t["removed"]:
+            bits.append("{:,} removed".format(t["removed"]))
+        if t["moved"] or t["pasted"]:
+            bits.append("not counted: {:,} moved, {:,} pasted".format(t["moved"], t["pasted"]))
+        h.append('<p class="detail">%s</p>' % " · ".join(bits))
+    cur, best = streak(days, today), longest_streak(days)
+    h.append('<dl class="stats">')
+    for lab, val in (("Last 7 days", "{:,}".format(total(7))), ("Last 30 days", "{:,}".format(total(30))),
+                     ("This year", "{:,}".format(ytd)),
+                     ("Days written", "%d of 30<small>streak %d · longest %d</small>" % (days_30, cur, best))):
+        h.append("<div><dt>%s</dt><dd>%s</dd></div>" % (lab, val))
+    h.append("</dl></section>")
+
+    # ---- last 90 days
+    h.append('<section class="block" id="days"><h2>Last 90 days</h2>'
+             '<p class="sub">Words written each day. Removed words hang below the line. '
+             'Moved, pasted and copied text isn\'t counted.</p>')
+    h.append('<div class="legend" aria-hidden="true"><span><i style="background:var(--s1)"></i>Written</span>'
+             '<span><i style="background:var(--s2)"></i>Removed</span>' +
+             ('<span><i class="dash"></i>Goal</span>' if DAILY_GOAL else "") +
+             '<span><i class="dot"></i>Today</span></div>')
+    h.append(scroller(svg_daily(days, today), 760, end=True))
+    rows = []
     for i in range(90):
         d = today - dt.timedelta(days=i)
-        x = days.get(d)
-        if x and (x["added"] or x["removed"]):
-            h.append("<tr><td>%s</td><td class=n>{:,}</td><td class=n>{:,}</td><td class=n>%d</td><td class=n>%s</td></tr>".format(
-                x["added"], x["removed"]) % (d.strftime("%a %b %-d"), len(x["files"]), fmt_minutes(len(x["slots"]) * SCAN_INTERVAL // 60)))
-    h.append("</table></details></section>")
+        x = days.get(d, empty_day)
+        rows.append([("Today" if d == today else d.strftime("%a %b %-d")), num(x["added"]), num(x["removed"]),
+                     num(len(x["files"])), fmt_minutes(active(x)) if active(x) else num(0)])
+    h.append("<details><summary>Show as table</summary>%s</details></section>" % table(
+        "Words per day, last 90 days, newest first",
+        [("Day", "t"), ("Written", "n"), ("Removed", "n"), ("Files", "n"), ("Active", "n")], rows, opt=(3, 4)))
 
-    h.append('<section class="card"><h2>The last year</h2><div class="sub">Words added per day</div>')
-    h.append(svg_calendar(days, today) + "</section>")
+    # ---- year
+    h.append('<section class="block" id="year"><h2>The last year</h2><p class="sub">Words written each day. '
+             'Darker means more.</p>')
+    h.append(svg_calendar(days, today))
+    rows, y, m = [], today.year, today.month
+    for _ in range(12):
+        md = [x for d, x in days.items() if d.year == y and d.month == m]
+        rows.append([dt.date(y, m, 1).strftime("%B %Y"), num(sum(x["added"] for x in md)),
+                     num(sum(1 for x in md if x["added"]))])
+        y, m = (y, m - 1) if m > 1 else (y - 1, 12)
+    h.append("<details><summary>Show by month</summary>%s</details></section>" % table(
+        "Words per month, last 12 months", [("Month", ""), ("Written", "n"), ("Days written", "n")], rows))
 
-    h.append('<section class="card"><h2>Projects, last 30 days</h2><div class="sub">Words added, by folder</div>')
-    h.append(svg_hbars(prow, "Words added per project, last 30 days") + "</section>")
+    # ---- projects
+    h.append('<section class="block" id="projects"><h2>Projects, last 30 days</h2>'
+             '<p class="sub">Words written, by folder.</p>')
+    h.append(svg_hbars(prow, "Words written per project, last 30 days") + "</section>")
 
-    h.append('<section class="card"><h2>When you write</h2><div class="sub">Words added by hour of day, last 90 days</div>')
-    h.append(svg_hours(changes, today) + "</section>")
+    # ---- hours
+    hours = hour_totals(changes, today)
+    h.append('<section class="block" id="hours"><h2>When you write</h2><p class="sub">Words written by hour, '
+             'last 90 days. Your day starts at %d:00.</p>' % DAY_START_HOUR)
+    h.append(svg_hours(hours))
+    h.append("<details><summary>Show as table</summary>%s</details></section>" % table(
+        "Words written by hour of day, last 90 days", [("Hour", "t"), ("Written", "n")],
+        [["%02d:00–%02d:59" % (hr, hr), num(v)] for hr, v in hours]))
 
-    h.append('<section class="card"><h2>Files, last 30 days</h2><table><tr><th>File</th><th class=n>Added</th>'
-             '<th class=n>Removed</th><th class=n>Length</th><th class=n>Last touched</th></tr>')
-    for p, (a, r, m, length) in frow:
-        h.append("<tr><td class=p>%s</td><td class=n>{:,}</td><td class=n>{:,}</td><td class=n>{:,}</td><td class=n>%s</td></tr>"
-                 .format(a, r, length) % (esc(shown(p)), dt.datetime.fromtimestamp(m).strftime("%b %-d %H:%M")))
-    h.append("</table></section>")
+    # ---- files
+    h.append('<section class="block" id="files"><h2>Files, last 30 days</h2>')
+    if frow:
+        h.append(table("Files written in, last 30 days",
+                       [("File", "p"), ("Written", "n"), ("Removed", "n"), ("Words now", "n"), ("Last edited", "n")],
+                       [[esc(shown(p)), num(a), num(r), num(length), dt.datetime.fromtimestamp(m).strftime("%b %-d, %H:%M")]
+                        for p, (a, r, m, length) in frow], opt=(2, 3)))
+    else:
+        h.append('<p class="empty">Nothing in the last 30 days.</p>')
+    h.append("</section>")
 
-    h.append('<section class="card"><h2>Recent changes</h2><table><tr><th>When</th><th>File</th><th class=n>+</th>'
-             '<th class=n>−</th><th>Note</th></tr>')
-    def note(c):
-        if c["kind"] == "copy":
-            return "file moved or copied"
-        bits = ["new file"] if c["kind"] == "new" else []
-        if c["mv"]:
-            bits.append("{:,} moved".format(c["mv"]))
-        if c["pa"]:
-            bits.append("{:,} pasted".format(c["pa"]))
-        return " · ".join(bits)
-    for c in recent:
-        h.append("<tr><td class=n style='text-align:left'>%s</td><td class=p>%s</td><td class=n>{:,}</td><td class=n>{:,}</td><td class=muted>%s</td></tr>"
-                 .format(written(c), removed(c))
-                 % (dt.datetime.fromtimestamp(c["m"]).strftime("%b %-d %H:%M"), esc(shown(c["path"])), esc(note(c))))
-    h.append("</table></section>")
-    h.append('<p class="muted">Counts are words; Japanese/Chinese/Korean characters count one each. '
-             'Active time is approximate: the number of %d-minute windows with a saved change. '
-             'Day boundary is %d:00.</p>' % (SCAN_INTERVAL // 60, DAY_START_HOUR))
-    h.append('<div id="tip"></div><script>%s</script></main></body></html>' % JS)
+    # ---- sessions
+    recent = sorted(sessions(changes), key=lambda s: -s["end"])[:15]
+    h.append('<section class="block" id="sessions"><h2>Recent sessions</h2>'
+             '<p class="sub">Saves to one file less than 30 minutes apart.</p>')
+    if recent:
+        notes = any(s["note"] for s in recent)
+        cols = [("When", "t"), ("File", "p"), ("Written", "n"), ("Removed", "n")] + ([("Note", "note")] if notes else [])
+        rows = []
+        for s in recent:
+            a, b = dt.datetime.fromtimestamp(s["start"]), dt.datetime.fromtimestamp(s["end"])
+            when = a.strftime("%b %-d, %H:%M") + ("–" + b.strftime("%H:%M") if b.strftime("%H:%M") != a.strftime("%H:%M") else "")
+            row = [when, esc(shown(s["path"])), num(s["w"]), num(s["r"])]
+            if notes:
+                row.append(esc(s["note"]))
+            rows.append(row)
+        h.append(table("Recent writing sessions, newest first", cols, rows, opt=(3, 4)))
+    else:
+        h.append('<p class="empty">No sessions yet. They appear after your first saved change.</p>')
+    h.append("</section>")
+
+    h.append('<footer><p>Words are counted as words; Chinese, Japanese and Korean characters count one each. '
+             'Text moved from elsewhere in your writing, pasted blocks and copied files aren\'t counted.</p>'
+             '<p>Every day is in <a href="daily.csv">daily.csv</a>, next to this report.</p></footer>')
+    h.append('<div id="tip" aria-hidden="true"></div><script>%s</script></main></body></html>' % JS)
 
     out = os.path.join(LOCAL, "report.html")
     write_atomic(out, "\n".join(h).encode())
@@ -1117,10 +1359,10 @@ def cmd_report(open_it=False, quiet=False):
         for d in sorted(days):
             x = days[d]
             wr.writerow([d.isoformat(), x["added"], x["removed"], x["cjk"], x["moved"], x["pasted"], len(x["files"]),
-                         len(x["slots"]) * SCAN_INTERVAL // 60])
+                         active(x)])
     write_atomic(os.path.join(LOCAL, "today.json"), json.dumps({  # what the menu bar shows
         "day": today.isoformat(), "day_start_hour": DAY_START_HOUR, "written": t["added"],
-        "removed": t["removed"], "files": len(t["files"]), "active_minutes": len(t["slots"]) * SCAN_INTERVAL // 60,
+        "removed": t["removed"], "files": len(t["files"]), "active_minutes": active(t),
         "streak": streak(days, today), "goal": DAILY_GOAL, "updated": now}).encode())
     if not quiet:
         print(out)
