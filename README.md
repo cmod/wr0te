@@ -181,6 +181,10 @@ Everything except `config.json` and `wr0te-data` can be deleted and rebuilt.
 The tests run in temporary folders and don't touch your settings, data or
 launchd.
 
+The app icon is drawn in `assets/icon.svg`; `assets/wr0te.icns` is built from
+it (render at 1024px, then `iconutil`). `install` copies it into the menu bar
+app.
+
 ## Uninstall
 
     python3 wr0te.py uninstall      # stops and removes the background job and menu bar app

@@ -912,44 +912,56 @@ def svg_daily(days, today, n=90):
     return "\n".join(out)
 
 
-def svg_calendar(days, today):
-    cell, gap = 12, 3
-    start = today - dt.timedelta(days=364)
-    start -= dt.timedelta(days=(start.weekday() + 1) % 7)  # back to Sunday
-    vals = sorted(x["added"] for d, x in days.items() if d >= start and x["added"] > 0)
-
-    def q(p):
-        return vals[min(len(vals) - 1, int(p * len(vals)))] if vals else 0
-    cuts = [q(0.2), q(0.4), q(0.6), q(0.8)]
-    weeks = ((today - start).days // 7) + 1
-    W, H = 30 + weeks * (cell + gap) + 12, 20 + 7 * (cell + gap)  # room for a month label in the last week
-    written_days = sum(1 for d, x in days.items() if d >= start and x["added"])
-    label = "Words written per day over the last year: %s with writing, best day %s words." % (
-        plural(written_days, "day"), "{:,}".format(vals[-1] if vals else 0))
-    out = ['<svg viewBox="0 0 %d %d" class="chart cal" role="img" aria-label="%s">' % (W, H, esc(label))]
-    for i, lab in ((1, "Mon"), (3, "Wed"), (5, "Fri")):
-        out.append('<text x="0" y="%d" class="tick">%s</text>' % (20 + i * (cell + gap) + 10, lab))
-    d, lastm = start, None
-    while d <= today:
-        wk, wd = (d - start).days // 7, (d.weekday() + 1) % 7
-        x, y = 30 + wk * (cell + gap), 20 + wd * (cell + gap)
-        if d.month != lastm and wd == 0:
-            if wk > 0 or (d + dt.timedelta(days=14)).month == d.month:  # skip a cramped first label
-                out.append('<text x="%d" y="12" class="tick">%s</text>' % (x, d.strftime("%b")))
-            lastm = d.month
-        a = days.get(d, {}).get("added", 0)
-        lvl = 0 if a == 0 else 1 + sum(1 for c in cuts if a > c)
-        out.append('<rect x="%d" y="%d" width="%d" height="%d" rx="2.5" class="h%d%s" data-tip="%s"/>'
-                   % (x, y, cell, cell, lvl, " today" if d == today else "", esc(day_tip(d, days.get(d), today))))
-        d += dt.timedelta(days=1)
+def svg_year(days, today, first, n=365):
+    """The last n days as faint bars, with the 7-day average drawn over them once there's a week to
+    average. Nothing is drawn before `first`, the first tracked day: that time isn't days of nothing."""
+    W, H, L, R, T, B = 960, 240, 48, 8, 14, 28
+    pw, ph = W - L - R, H - T - B
+    seq = [today - dt.timedelta(days=i) for i in range(n - 1, -1, -1)]
+    vals = [days.get(d, {}).get("added", 0) for d in seq]
+    start = max(0, (first - seq[0]).days)
+    avg = [sum(days.get(d - dt.timedelta(days=k), {}).get("added", 0) for k in range(7)) / 7 for d in seq]
+    line_from = start + 6  # the first full week
+    peak = max(vals + [DAILY_GOAL, 1])
+    step = nice_step(peak)
+    top = step * -(-peak // step)
+    scale = ph / top
+    y0 = T + ph
+    slot = pw / n
+    bw = max(1, slot * 0.72)
+    written_days = sum(1 for v in vals if v)
+    label = ("Words written per day, last %d days, with a 7-day average. %s with writing; "
+             "average now %s a day." % (n, plural(written_days, "day"), "{:,}".format(round(avg[-1]))))
+    out = ['<svg viewBox="0 0 %d %d" class="chart" role="img" aria-label="%s">' % (W, H, esc(label))]
+    for v in range(0, top + 1, step):
+        y = y0 - v * scale
+        out.append('<line x1="%d" x2="%d" y1="%.1f" y2="%.1f" class="grid"/>' % (L, W - R, y, y))
+        out.append('<text x="%d" y="%.1f" class="tick" text-anchor="end">%s</text>' % (L - 8, y + 4, fmt_tick(v)))
+    for i, (d, v) in enumerate(zip(seq, vals)):
+        x = L + i * slot
+        if v:
+            out.append('<rect x="%.2f" y="%.1f" width="%.2f" height="%.1f" class="day%s"/>'
+                       % (x + (slot - bw) / 2, y0 - v * scale, bw, v * scale, " today" if d == today else ""))
+        if d.day == 1:
+            out.append('<text x="%.1f" y="%d" class="tick">%s</text>'
+                       % (x, H - 4, d.strftime("%b %Y" if d.month == 1 else "%b")))
+    if DAILY_GOAL:
+        gy = y0 - DAILY_GOAL * scale
+        out.append('<line x1="%d" x2="%d" y1="%.1f" y2="%.1f" class="goal"/>' % (L, W - R, gy, gy))
+        out.append('<text x="%d" y="%.1f" class="goal-l">goal {:,}</text>'.format(DAILY_GOAL) % (L + 6, gy - 5))
+    if line_from < n:
+        pts = " ".join("%.1f,%.1f" % (L + (i + .5) * slot, y0 - avg[i] * scale) for i in range(line_from, n))
+        out.append('<polyline points="%s" class="avg"/>' % pts)
+        out.append('<circle cx="%.1f" cy="%.1f" r="3.5" class="avg-end"/>' % (L + (n - .5) * slot, y0 - avg[-1] * scale))
+    out.append('<circle cx="%.1f" cy="%d" r="3" class="today-dot"/>' % (L + (n - .5) * slot, T + ph + 9))
+    for i, d in enumerate(seq):
+        tip = (d.strftime("%a %b %-d, %Y") + "\nBefore tracking began" if i < start else day_tip(d, days.get(d), today)
+               + ("\n7-day average: {:,} a day".format(round(avg[i])) if i >= line_from else ""))
+        out.append('<rect x="%.2f" y="%d" width="%.2f" height="%d" class="hit" data-tip="%s"/>'
+                   % (L + i * slot, T, slot, ph, esc(tip)))
+    out.append('<line x1="%d" x2="%d" y1="%.1f" y2="%.1f" class="axis"/>' % (L, W - R, y0, y0))
     out.append("</svg>")
-    ranges = ["No writing", "1–{:,} words".format(cuts[0])]
-    ranges += ["{:,}–{:,} words".format(lo + 1, hi) for lo, hi in zip(cuts, cuts[1:])]
-    ranges.append("More than {:,} words".format(cuts[3]))
-    legend = ('<div class="scale" aria-hidden="true"><span>0</span>' +
-              "".join('<i class="h%d" data-tip="%s"></i>' % (i, esc(r)) for i, r in enumerate(ranges)) +
-              "<span>{:,}</span></div>".format(vals[-1] if vals else 0))
-    return scroller("\n".join(out), W, end=True) + legend
+    return scroller("\n".join(out), 760, end=True)
 
 
 def svg_hbars(rows, label):
@@ -1071,10 +1083,10 @@ def num(v):
 CSS = """
 :root{color-scheme:light dark;--page:#f6f3ee;--surface:#fffdf9;--ink:#211d19;--ink2:#58524a;--muted:#6b645b;
 --rule:#e3ddd3;--grid:#ebe5dc;--axis:#c9c1b4;--s1:#c2562f;--s2:#8f877b;--focus:#c2562f;
---h0:#e4ddd1;--h1:#ebb293;--h2:#e3946f;--h3:#cc6943;--h4:#a84826;--h5:#743016}
+--h0:#e4ddd1;--h1:#ebb293}
 @media (prefers-color-scheme:dark){:root{--page:#14120f;--surface:#1c1915;--ink:#f1ece4;--ink2:#c7bfb3;
 --muted:#a39a8d;--rule:#2d2924;--grid:#28241f;--axis:#3e3830;--s1:#e47c55;--s2:#80776b;--focus:#e47c55;
---h0:#2b2722;--h1:#5c301d;--h2:#7a3a22;--h3:#b2522e;--h4:#de7a52;--h5:#f4b494}}
+--h0:#2b2722;--h1:#5c301d}}
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
 body{margin:0;background:var(--page);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
@@ -1120,13 +1132,11 @@ section.block{margin-top:48px;padding-top:28px;border-top:1px solid var(--rule)}
 .s1{fill:var(--s1)}.s2{fill:var(--s2)}
 .chart .s1.today{stroke:var(--ink);stroke-width:1.5}.today-dot{fill:var(--ink)}
 .hit{fill:transparent}.hit:hover{fill:var(--ink);fill-opacity:.07}
-.h0{fill:var(--h0)}.h1{fill:var(--h1)}.h2{fill:var(--h2)}.h3{fill:var(--h3)}.h4{fill:var(--h4)}.h5{fill:var(--h5)}
-.cal rect:hover{stroke:var(--ink);stroke-width:1}.cal rect.today{stroke:var(--ink);stroke-width:1.5}
-.scale{display:flex;gap:4px;align-items:center;justify-content:flex-end;color:var(--muted);font-size:12px;margin-top:8px}
-.scale span{margin:0 4px;font-variant-numeric:tabular-nums}
-.scale i{width:12px;height:12px;border-radius:2.5px;display:inline-block}
-.scale i.h0{background:var(--h0)}.scale i.h1{background:var(--h1)}.scale i.h2{background:var(--h2)}
-.scale i.h3{background:var(--h3)}.scale i.h4{background:var(--h4)}.scale i.h5{background:var(--h5)}
+.day{fill:var(--s1);opacity:.32}.day.today{opacity:.8}
+.avg{fill:none;stroke:var(--s1);stroke-width:2.25;stroke-linejoin:round;stroke-linecap:round}
+.avg-end{fill:var(--s1)}
+.legend i.faint{background:var(--s1);opacity:.32}
+.legend i.line{height:0;border-top:2.5px solid var(--s1);border-radius:0;vertical-align:3px;width:14px}
 table{width:100%;border-collapse:collapse;font-size:14px;margin-top:14px}
 th{text-align:left;color:var(--ink2);font-weight:500;font-size:13px;border-bottom:1px solid var(--rule);padding:6px 12px 6px 0}
 td{border-bottom:1px solid var(--grid);padding:8px 12px 8px 0;vertical-align:top}
@@ -1291,9 +1301,17 @@ def cmd_report(open_it=False, quiet=False):
         [("Day", "t"), ("Written", "n"), ("Removed", "n"), ("Files", "n"), ("Active", "n")], rows, opt=(3, 4)))
 
     # ---- year
-    h.append('<section class="block" id="year"><h2>The last year</h2><p class="sub">Words written each day. '
-             'Darker means more.</p>')
-    h.append(svg_calendar(days, today))
+    # A year, or since tracking began when that's sooner (at least 30 days, so a new install isn't a sliver).
+    first = min(days) if days else today
+    span = min(365, max(30, (today - first).days + 1))
+    title = "The last year" if span == 365 else "Since %s" % first.strftime("%b %-d, %Y")
+    h.append('<section class="block" id="year"><h2>%s</h2><p class="sub">Words written each day, with the '
+             'average of the last 7 days drawn over them.</p>' % title)
+    h.append('<div class="legend" aria-hidden="true"><span><i class="faint"></i>Each day</span>'
+             '<span><i class="line"></i>7-day average</span>' +
+             ('<span><i class="dash"></i>Goal</span>' if DAILY_GOAL else "") +
+             '<span><i class="dot"></i>Today</span></div>')
+    h.append(svg_year(days, today, first, span))
     rows, y, m = [], today.year, today.month
     for _ in range(12):
         md = [x for d, x in days.items() if d.year == y and d.month == m]
@@ -1379,7 +1397,7 @@ def plist_path(label=LABEL):
     return os.path.expanduser("~/Library/LaunchAgents/%s.plist" % label)
 
 
-def build_bundle(app, ident, compile_cmd, build_id, ui_key, display=None):
+def build_bundle(app, ident, compile_cmd, build_id, ui_key, display=None, icon=None):
     """Build an ad-hoc signed .app around one executable, unless build_id says it's already current."""
     name = os.path.splitext(os.path.basename(app))[0]
     exe = os.path.join(app, "Contents", "MacOS", name)
@@ -1398,11 +1416,15 @@ def build_bundle(app, ident, compile_cmd, build_id, ui_key, display=None):
   <key>CFBundleName</key><string>{shown}</string>
   <key>CFBundleExecutable</key><string>{name}</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>{ui_key}</key><true/>{display}
+  <key>{ui_key}</key><true/>{display}{icon}
 </dict></plist>
 """.format(ident=ident, name=name, shown=display or name, ui_key=ui_key,
-           display="\n  <key>CFBundleDisplayName</key><string>%s</string>" % display if display else "")
+           display="\n  <key>CFBundleDisplayName</key><string>%s</string>" % display if display else "",
+           icon="\n  <key>CFBundleIconFile</key><string>wr0te</string>" if icon else "")
     write_atomic(os.path.join(app, "Contents", "Info.plist"), info.encode())
+    if icon:
+        with open(icon, "rb") as f:
+            write_atomic(os.path.join(app, "Contents", "Resources", "wr0te.icns"), f.read())
     subprocess.check_call(compile_cmd + ["-o", exe])
     write_atomic(id_file, build_id.encode())
     subprocess.check_call(["/usr/bin/codesign", "--force", "-s", "-", "--identifier", ident, app])
@@ -1424,10 +1446,12 @@ def build_app(script):
 def build_menu_app(script):
     """Compile menubar.swift into ~/Applications/wr0te-menu.app. It reads only files in LOCAL and
     asks wr0te.app for scans, so it needs no permissions of its own and can be rebuilt freely."""
-    src = os.path.join(os.path.dirname(script), "menubar.swift")
-    with open(src, "rb") as f:
-        build_id = hashlib.sha256(f.read() + b"\0name:wr0te").hexdigest()
-    exe, _ = build_bundle(MENU_APP, "com.wr0te.menu", ["/usr/bin/swiftc", "-O", src], build_id, "LSUIElement", "wr0te")
+    here = os.path.dirname(script)
+    src, icon = os.path.join(here, "menubar.swift"), os.path.join(here, "assets", "wr0te.icns")
+    with open(src, "rb") as f, open(icon, "rb") as g:
+        build_id = hashlib.sha256(f.read() + b"\0name:wr0te\0" + g.read()).hexdigest()
+    exe, _ = build_bundle(MENU_APP, "com.wr0te.menu", ["/usr/bin/swiftc", "-O", src], build_id, "LSUIElement",
+                          "wr0te", icon)
     # launchd starts it without LaunchServices; register it so Notifications and Focus settings list it as wr0te.
     subprocess.call([LSREGISTER, "-f", MENU_APP], stderr=subprocess.DEVNULL)
     return exe
