@@ -100,7 +100,7 @@ DAY_START_HOUR = _cfg["day_start_hour"]
 HIDE_FOLDERS = _cfg["hide_folders"]
 MENU_BAR = _cfg["menu_bar"]
 
-TEXT_EXT = {".md", ".markdown", ".mdown", ".txt", ".text", ".fountain"}
+TEXT_EXT = {".md", ".markdown", ".mdown", ".txt", ".text", ".fountain", ".org"}
 # Package-style folders (Pages, RTFD, Scrivener...) are opaque; never descend into them.
 BUNDLE_EXT = (".pages", ".rtfd", ".textbundle", ".key", ".numbers", ".scriv", ".app")
 
