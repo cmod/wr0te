@@ -114,6 +114,8 @@ LABEL = "com.wr0te.scan"
 APP = os.path.expanduser("~/Applications/wr0te.app")
 MENU_LABEL = "com.wr0te.menu"
 MENU_APP = os.path.expanduser("~/Applications/wr0te-menu.app")
+LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework"
+              "/Support/lsregister")
 SF_DATALESS = 0x40000000     # Dropbox/iCloud "online-only" placeholder; reading it forces a download
 MAX_FILE = 20 * 1024 * 1024  # skip anything bigger: not prose, and not worth syncing
 HASH_RE = re.compile(r"[0-9a-f]{40}")
@@ -1363,7 +1365,7 @@ def cmd_report(open_it=False, quiet=False):
     write_atomic(os.path.join(LOCAL, "today.json"), json.dumps({  # what the menu bar shows
         "day": today.isoformat(), "day_start_hour": DAY_START_HOUR, "written": t["added"],
         "removed": t["removed"], "files": len(t["files"]), "active_minutes": active(t),
-        "streak": streak(days, today), "goal": DAILY_GOAL, "updated": now}).encode())
+        "streak": streak(days, today), "days_30": days_30, "goal": DAILY_GOAL, "updated": now}).encode())
     if not quiet:
         print(out)
     if open_it:
@@ -1377,7 +1379,7 @@ def plist_path(label=LABEL):
     return os.path.expanduser("~/Library/LaunchAgents/%s.plist" % label)
 
 
-def build_bundle(app, ident, compile_cmd, build_id, ui_key):
+def build_bundle(app, ident, compile_cmd, build_id, ui_key, display=None):
     """Build an ad-hoc signed .app around one executable, unless build_id says it's already current."""
     name = os.path.splitext(os.path.basename(app))[0]
     exe = os.path.join(app, "Contents", "MacOS", name)
@@ -1393,12 +1395,13 @@ def build_bundle(app, ident, compile_cmd, build_id, ui_key):
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
   <key>CFBundleIdentifier</key><string>{ident}</string>
-  <key>CFBundleName</key><string>{name}</string>
+  <key>CFBundleName</key><string>{shown}</string>
   <key>CFBundleExecutable</key><string>{name}</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>{ui_key}</key><true/>
+  <key>{ui_key}</key><true/>{display}
 </dict></plist>
-""".format(ident=ident, name=name, ui_key=ui_key)
+""".format(ident=ident, name=name, shown=display or name, ui_key=ui_key,
+           display="\n  <key>CFBundleDisplayName</key><string>%s</string>" % display if display else "")
     write_atomic(os.path.join(app, "Contents", "Info.plist"), info.encode())
     subprocess.check_call(compile_cmd + ["-o", exe])
     write_atomic(id_file, build_id.encode())
@@ -1423,8 +1426,11 @@ def build_menu_app(script):
     asks wr0te.app for scans, so it needs no permissions of its own and can be rebuilt freely."""
     src = os.path.join(os.path.dirname(script), "menubar.swift")
     with open(src, "rb") as f:
-        build_id = hashlib.sha256(f.read()).hexdigest()
-    return build_bundle(MENU_APP, "com.wr0te.menu", ["/usr/bin/swiftc", "-O", src], build_id, "LSUIElement")[0]
+        build_id = hashlib.sha256(f.read() + b"\0name:wr0te").hexdigest()
+    exe, _ = build_bundle(MENU_APP, "com.wr0te.menu", ["/usr/bin/swiftc", "-O", src], build_id, "LSUIElement", "wr0te")
+    # launchd starts it without LaunchServices; register it so Notifications and Focus settings list it as wr0te.
+    subprocess.call([LSREGISTER, "-f", MENU_APP], stderr=subprocess.DEVNULL)
+    return exe
 
 
 def load_agent(label, body):
@@ -1483,7 +1489,7 @@ def cmd_install(folder=None):
   <key>LimitLoadToSessionType</key><string>Aqua</string>
   <key>ProcessType</key><string>Interactive</string>
 """.format(exe=html.escape(build_menu_app(script))))
-        print("installed %s — today's words in the menu bar" % MENU_LABEL)
+        print("installed %s — wr0te in the menu bar" % MENU_LABEL)
     else:
         unload_agent(MENU_LABEL)
     if rebuilt:
@@ -1545,7 +1551,17 @@ def idle_seconds():
         return 0
 
 
+def menu_bar_running():
+    return subprocess.run(["/usr/bin/pgrep", "-x", "wr0te-menu"], capture_output=True).returncode == 0
+
+
 def notify(title, message):
+    """Through the menu bar app when it's running, so the notification is wr0te's own and can be let
+    through a Focus; otherwise through osascript, which macOS shows as Script Editor."""
+    if MENU_BAR and menu_bar_running():
+        write_atomic(os.path.join(LOCAL, "notify.json"),
+                     json.dumps({"title": title, "body": message, "at": time.time()}).encode())
+        return
     # Text goes in as an argument, never spliced into the AppleScript source.
     subprocess.call(["/usr/bin/osascript", "-e", "on run argv",
                      "-e", "display notification (item 2 of argv) with title (item 1 of argv)",

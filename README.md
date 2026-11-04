@@ -33,7 +33,7 @@ standard library.
 
 `install` saves the folder in your settings, builds a tiny launcher app in
 `~/Applications/wr0te.app`, starts a background job that scans every 5
-minutes, and puts today's word count in the menu bar.
+minutes, and adds a pencil to the menu bar.
 
 macOS protects some folders: Dropbox and other cloud folders, Documents and
 Desktop. Opening `wr0te.app` once lets macOS ask for access to yours. If
@@ -54,13 +54,18 @@ The report is rebuilt in the background whenever something changes, at
 `~/Library/Application Support/wr0te/report.html`, along with `daily.csv` for
 spreadsheets.
 
-The menu bar shows today's words. Click it for words removed, files, active
-time, progress toward the goal and your streak. **Open Report** scans right
-away, rebuilds the report and opens it in your browser. Quit hides it until you
-next log in; set `"menu_bar": false` and run `install` again to turn it off.
+The menu bar pencil gets a check mark once you reach the day's goal. Click it
+for today's words, words removed, files, active time, goal progress and days
+written. **Copy Today's Stats** (⌘C) copies a one-line summary, and **Open
+Report** scans right away, rebuilds the report and opens it in your browser.
+Quit hides it until you next log in; set `"menu_bar": false` and run `install`
+again to turn it off.
 
 When the day's written words reach the daily goal (2,000 unless you change it),
-you get a macOS notification.
+you get a notification from wr0te. The first time, macOS asks whether wr0te may
+send notifications. If you write in a Focus mode, add wr0te to that Focus's
+allowed apps, or the notification goes quietly to Notification Center. Without
+the menu bar app, the notification comes from Script Editor instead.
 
 ## Settings
 

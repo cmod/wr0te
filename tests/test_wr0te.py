@@ -197,6 +197,23 @@ class Goal(Case):
             w.notify, w.idle_seconds = saved
         self.assertEqual(sent, ["mac-a"])
 
+    def test_notification_goes_through_the_menu_bar_app(self):
+        calls = []
+        saved = w.menu_bar_running, w.subprocess.call, w.MENU_BAR
+        w.subprocess.call = lambda args, **kw: calls.append(args[0])
+        try:
+            w.MENU_BAR, w.menu_bar_running = True, lambda: True
+            w.notify("Goal", "2,019 words today.")
+            with open(os.path.join(w.LOCAL, "notify.json")) as f:
+                self.assertEqual(json.load(f)["body"], "2,019 words today.")
+            self.assertEqual(calls, [])
+
+            w.menu_bar_running = lambda: False  # quit, or turned off: fall back to osascript
+            w.notify("Goal", "2,019 words today.")
+            self.assertEqual(calls, ["/usr/bin/osascript"])
+        finally:
+            w.menu_bar_running, w.subprocess.call, w.MENU_BAR = saved
+
 
 class Settings(Case):
     def write_config(self, cfg):
