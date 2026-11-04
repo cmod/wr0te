@@ -56,9 +56,9 @@ SETTINGS = {  # name: (default, type); config.json may set any of these
     "daily_goal": (2000, int),        # notify once a day when written words reach this (0 = off)
     "day_start_hour": (4, int),       # writing at 2am counts toward the previous day
     "hide_folders": ([], list),       # leading folders left off paths in reports
-    "split_folders": ([], list),      # top-level folders whose subfolders are each a project
     "menu_bar": (True, bool),         # show today's words in the menu bar
 }
+RETIRED = {"split_folders"}  # accepted in old config files, no longer used
 
 
 def read_config():
@@ -73,6 +73,8 @@ def read_config():
         sys.exit("wr0te: %s should be a JSON object" % CONFIG)
     cfg = {k: d for k, (d, _) in SETTINGS.items()}
     for k, v in user.items():
+        if k in RETIRED:
+            continue
         ok = k in SETTINGS and (v is None or isinstance(v, SETTINGS[k][1]))
         if not ok or (isinstance(v, list) and not all(isinstance(x, str) for x in v)):
             sys.exit("wr0te: %s: bad setting %r" % (CONFIG, k))
@@ -96,7 +98,6 @@ ROOT, DATA = resolve_paths(_cfg)
 DAILY_GOAL = _cfg["daily_goal"]
 DAY_START_HOUR = _cfg["day_start_hour"]
 HIDE_FOLDERS = _cfg["hide_folders"]
-SPLIT_FOLDERS = _cfg["split_folders"]
 MENU_BAR = _cfg["menu_bar"]
 
 TEXT_EXT = {".md", ".markdown", ".mdown", ".txt", ".text", ".fountain"}
@@ -684,12 +685,15 @@ def shown(path):
 
 
 def project_of(path):
-    parts = shown(path).split(os.sep)[:-1]
-    if not parts:
-        return "(top level)"
-    if len(parts) >= 2 and parts[0] in SPLIT_FOLDERS:
-        return parts[0] + " / " + parts[1]
-    return parts[0]
+    """The folder a file sits in, as displayed: Novels/Harbor/ch1.md is in Novels/Harbor."""
+    return os.path.dirname(shown(path)) or "(top level)"
+
+
+def project_labels(projects):
+    """Each project's own folder name, or its whole path where two share a name."""
+    leaf = {p: os.path.basename(p) or p for p in projects}
+    names = Counter(leaf.values())
+    return {p: leaf[p] if names[leaf[p]] == 1 else p for p in projects}
 
 
 def counted(c):
@@ -1214,9 +1218,10 @@ def cmd_report(open_it=False, quiet=False):
         p[0] += written(c); p[1] += removed(c); p[2].add(c["path"])
         f = fil[c["path"]]
         f[0] += written(c); f[1] += removed(c); f[2] = max(f[2], c["m"]); f[3] = c["w"] + c["k"]
-    prow = sorted(proj.items(), key=lambda kv: -kv[1][0])[:12]
-    prow = [(k, v[0], "%s\n%s written · {:,} removed\n%s, last 30 days".format(v[1])
-             % (k, plural(v[0], "word"), plural(len(v[2]), "file"))) for k, v in prow if v[0]]
+    prow = [kv for kv in sorted(proj.items(), key=lambda kv: -kv[1][0]) if kv[1][0]][:12]
+    labels = project_labels([k for k, _ in prow])
+    prow = [(labels[k], v[0], "%s\n%s written · {:,} removed\n%s, last 30 days".format(v[1])
+             % (k, plural(v[0], "word"), plural(len(v[2]), "file"))) for k, v in prow]
     frow = [kv for kv in sorted(fil.items(), key=lambda kv: -kv[1][0]) if kv[1][0] or kv[1][1]][:25]
 
     # what was worked on today, biggest first
@@ -1323,7 +1328,7 @@ def cmd_report(open_it=False, quiet=False):
 
     # ---- projects
     h.append('<section class="block" id="projects"><h2>Projects, last 30 days</h2>'
-             '<p class="sub">Words written, by folder.</p>')
+             '<p class="sub">Words written, by the folder each file is in.</p>')
     h.append(svg_hbars(prow, "Words written per project, last 30 days") + "</section>")
 
     # ---- hours

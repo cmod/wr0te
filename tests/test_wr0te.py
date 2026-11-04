@@ -27,7 +27,7 @@ COMMON = "the a of and to in is it that was for on with as at by this but from".
 class Case(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="wr0te-test-")
-        self.saved = {k: getattr(w, k) for k in ("LOCAL", "CONFIG", "ROOT", "DATA", "HIDE_FOLDERS", "SPLIT_FOLDERS")}
+        self.saved = {k: getattr(w, k) for k in ("LOCAL", "CONFIG", "ROOT", "DATA", "HIDE_FOLDERS")}
         w.LOCAL = os.path.join(self.tmp, "local")
         w.CONFIG = os.path.join(w.LOCAL, "config.json")
         w.ROOT = os.path.join(self.tmp, "writing")
@@ -240,11 +240,18 @@ class Settings(Case):
                 w.read_config()
 
     def test_display_folders(self):
-        w.HIDE_FOLDERS, w.SPLIT_FOLDERS = ["Projects"], ["Journals"]
+        w.HIDE_FOLDERS = ["Projects"]
         self.assertEqual(w.shown("Projects/Novel/ch1.md"), "Novel/ch1.md")
-        self.assertEqual(w.project_of("Projects/Novel/ch1.md"), "Novel")
-        self.assertEqual(w.project_of("Journals/2026/jan.md"), "Journals / 2026")
+        self.assertEqual(w.project_of("Projects/Novels/Harbor/ch1.md"), "Novels/Harbor")
+        self.assertEqual(w.project_of("Journals/2026/jan.md"), "Journals/2026")
         self.assertEqual(w.project_of("notes.md"), "(top level)")
+        labels = w.project_labels(["Novels/Harbor", "Essays/Drafts", "Novel/Drafts", "Journals/2026"])
+        self.assertEqual(labels, {"Novels/Harbor": "Harbor", "Essays/Drafts": "Essays/Drafts",
+                                  "Novel/Drafts": "Novel/Drafts", "Journals/2026": "2026"})
+
+    def test_retired_setting_is_ignored(self):
+        self.write_config({"root": "~/Writing", "split_folders": ["Journals"]})
+        self.assertEqual(w.read_config()["root"], "~/Writing")
 
 
 class SyncedData(Case):

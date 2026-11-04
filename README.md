@@ -78,7 +78,6 @@ sets `root`; everything else is optional:
       "daily_goal": 2000,
       "day_start_hour": 4,
       "hide_folders": ["Projects"],
-      "split_folders": ["Journals"],
       "menu_bar": true
     }
 
@@ -88,8 +87,6 @@ sets `root`; everything else is optional:
 - `day_start_hour`: writing before this hour counts toward the previous day.
 - `hide_folders`: leading folders left off paths in reports
   (`Projects/Novel/ch1.md` shows as `Novel/ch1.md`).
-- `split_folders`: top-level folders whose subfolders each count as a project.
-  Otherwise a project is a top-level folder.
 - `menu_bar`: today's words in the menu bar. Run `install` again after changing it.
 
 wr0te reads the file every time it runs, so there's nothing to restart. The `WR0TE_ROOT`, `WR0TE_DATA` and
