@@ -153,20 +153,20 @@ class Scanning(Case):
             self.assertEqual(json.load(f)["written"], 59)
 
     def test_also_watch_folders(self):
-        extra = os.path.join(self.tmp, "campaigns")
-        os.makedirs(os.path.join(extra, "zm"))
-        with open(os.path.join(extra, "zm", "001.md"), "w") as f:
+        extra = os.path.join(self.tmp, "letters")
+        os.makedirs(os.path.join(extra, "spring"))
+        with open(os.path.join(extra, "spring", "001.md"), "w") as f:
             f.write(self.prose(40))
         self.write("Novel/ch1.md", "# Chapter one\n")
         w.scan(quiet=True)
-        w.ALSO_WATCH = {"mailbot": extra}  # added later: what's there is a baseline
+        w.ALSO_WATCH = {"zine": extra}  # added later: what's there is a baseline
         w.scan(quiet=True)
-        with open(os.path.join(extra, "zm", "002.md"), "w") as f:
+        with open(os.path.join(extra, "spring", "002.md"), "w") as f:
             f.write(self.prose(30))
         w.scan(quiet=True)
         changes = w.build_changes(w.load_events())
         kinds = {c["path"]: c["kind"] for c in changes}
-        self.assertEqual(kinds["mailbot/zm/001.md"], "baseline")
+        self.assertEqual(kinds["zine/spring/001.md"], "baseline")
         self.assertEqual(w.daily(changes)[w.writing_day(time.time())]["added"], 30)
 
         shutil.rmtree(extra)  # not on this Mac: skipped, not deleted
