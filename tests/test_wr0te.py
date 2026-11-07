@@ -177,6 +177,37 @@ class Scanning(Case):
         self.assertFalse([e for e in w.load_events() if e["e"] == "d"])
         self.assertEqual(list(w.load_json(os.path.join(w.LOCAL, "state.json"), {})["files"]), ["Novel/ch1.md"])
 
+    def test_copying_a_slowly_revised_file_is_moved(self):
+        doc = self.prose(400).split()
+        self.write("Book/aside.md", " ".join(doc))
+        w.scan(quiet=True)
+        for i in range(0, 400, 6):  # revised a word at a time, scan after scan
+            doc[i] = "rev%d" % i
+            self.write("Book/aside.md", " ".join(doc))
+            w.scan(quiet=True)
+        self.write("Book/main.md", "# Main\n")
+        w.scan(quiet=True)
+        self.write("Book/main.md", "# Main\n\n" + " ".join(doc) + "\n")
+        w.scan(quiet=True)
+        last = [c for c in w.build_changes(w.load_events()) if c["path"] == "Book/main.md"][-1]
+        self.assertGreater(last["mv"], 380)
+        self.assertLess(last["aw"] + last["pa"], 20)
+
+    def test_unreadable_snapshot_counts_nothing_until_it_arrives(self):
+        self.write("a.md", "# A\n")
+        w.scan(quiet=True)
+        self.write("a.md", "# A\n\n" + self.prose(900))
+        w.scan(quiet=True)
+        h = w.load_events()[-1]["h"]
+        os.rename(w.snapshot_path(h), w.snapshot_path(h) + ".away")
+        w.cmd_report(quiet=True)
+        with open(os.path.join(w.LOCAL, "today.json")) as f:
+            self.assertEqual(json.load(f)["written"], 0)
+        self.assertTrue(os.path.exists(os.path.join(w.LOCAL, "report-pending")))
+        os.rename(w.snapshot_path(h) + ".away", w.snapshot_path(h))
+        w.cmd_report(quiet=True)
+        self.assertFalse(os.path.exists(os.path.join(w.LOCAL, "report-pending")))
+
     def test_mass_disappearance_waits_an_hour(self):
         for i in range(30):
             self.write("f%d.md" % i, "file %d\n" % i)

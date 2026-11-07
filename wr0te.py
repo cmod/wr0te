@@ -118,6 +118,7 @@ SHINGLE = 8                  # tokens per fingerprint when checking "this text a
 SAMPLE = 4                   # index 1 in N fingerprints, to keep the archive index small
 MOVED_MIN = 12               # matched runs shorter than this are coincidence, not moved text
 RULES_VERSION = 3            # bump when classify() logic changes, so cached results are redone
+INDEX_VERSION = 2            # bump when what goes into the fingerprint index changes
 
 LABEL = "com.wr0te.scan"
 APP = os.path.expanduser("~/Applications/wr0te.app")
@@ -553,7 +554,7 @@ class Archive:
         self.db.execute("CREATE TABLE IF NOT EXISTS result (k TEXT PRIMARY KEY, v TEXT)")
         self.db.execute("CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT)")
         # Cached results depend on the rules; if any rule changed, reclassify all history.
-        index_rules = json.dumps([SHINGLE, SAMPLE])
+        index_rules = json.dumps([INDEX_VERSION, SHINGLE, SAMPLE])
         rules = json.dumps([RULES_VERSION, SHINGLE, SAMPLE, MOVED_MIN, TYPING_WPM, SCAN_INTERVAL])
         meta = dict(self.db.execute("SELECT k, v FROM meta"))
         if meta.get("index_rules") != index_rules:
@@ -612,10 +613,9 @@ def classify(archive, prev, ev, obs, kind):
     a = read_snapshot(prev["h"]) if prev else ""
     b = read_snapshot(ev["h"])
     if a is None or b is None:
-        # Snapshot hasn't synced to this machine yet: estimate from counts, store nothing.
-        dw = ev["w"] - (prev["w"] if prev else 0)
-        dk = ev["k"] - (prev["k"] if prev else 0)
-        return {"aw": max(dw, 0), "ak": max(dk, 0), "rw": max(-dw, 0), "rk": max(-dk, 0), "mv": 0, "pa": 0}
+        # Snapshot hasn't synced to this machine yet. Count nothing rather than guess (a pasted
+        # chapter would look like a day's typing) and store nothing; the report redoes it next run.
+        return {"aw": 0, "ak": 0, "rw": 0, "rk": 0, "mv": 0, "pa": 0, "pending": 1}
     ins, rem = diff_chunks(a, b)
     r = {"aw": 0, "ak": 0, "rw": 0, "rk": 0, "mv": 0, "pa": 0}
     # At least one full scan interval: autosave timing makes shorter windows unreliable.
@@ -655,7 +655,9 @@ def classify(archive, prev, ev, obs, kind):
                 w, k = split_counts(chunk[s:e])
                 r["rw"] += w
                 r["rk"] += k
-    archive.add(new_fps, ev["m"])
+    # Index the whole version, not just what was inserted: text revised a few words at a time
+    # never forms 8-word runs inside any one insert, but it can still be copied elsewhere later.
+    archive.add(fingerprints(tokens(b)), ev["m"])
     archive.save_result(key, r)
     return r
 
@@ -1238,6 +1240,11 @@ document.querySelectorAll('.scroll[data-end]').forEach(s=>{s.scrollLeft=s.scroll
 
 def cmd_report(open_it=False, quiet=False):
     changes = build_changes(load_events())
+    pending = os.path.join(LOCAL, "report-pending")  # some versions couldn't be read yet
+    if any(c.get("pending") for c in changes):
+        write_atomic(pending, b"")
+    elif os.path.exists(pending):
+        os.remove(pending)
     days = daily(changes)
     now = time.time()
     today = writing_day(now)
@@ -1608,7 +1615,8 @@ def cmd_auto():
             requested = True
         except FileNotFoundError:
             requested = False
-        if n or stale or requested or newer_logs_than(report):
+        waiting = os.path.exists(os.path.join(LOCAL, "report-pending"))
+        if n or stale or requested or waiting or newer_logs_than(report):
             check_goal(cmd_report(quiet=True))
     except LogUnavailable as e:  # the report is left as it was and retried next run
         log_line("waiting for log to sync: %s" % e)
