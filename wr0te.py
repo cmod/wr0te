@@ -109,6 +109,7 @@ MENU_BAR = _cfg["menu_bar"]
 ALSO_WATCH = _cfg["also_watch"]
 
 TEXT_EXT = {".md", ".markdown", ".mdown", ".txt", ".text", ".fountain", ".org"}
+FIRST_TEXT_EXT = {".md", ".markdown", ".mdown", ".txt", ".text", ".fountain"}  # before scan state kept the list
 # Package-style folders (Pages, RTFD, Scrivener...) are opaque; never descend into them.
 BUNDLE_EXT = (".pages", ".rtfd", ".textbundle", ".key", ".numbers", ".scriv", ".app")
 
@@ -263,6 +264,10 @@ def scan(quiet=False):
             del files[rel]
     state["also"] = sorted(known & set(ALSO_WATCH))
 
+    # Likewise files of a type wr0te has just started watching: they were already there.
+    new_ext = () if baseline else tuple(sorted(TEXT_EXT - set(state.get("ext", FIRST_TEXT_EXT))))
+    state["ext"] = sorted(TEXT_EXT)
+
     events, seen, found, fresh = [], set(), [], []
     for prefix, folder in watched_folders():
         if not prefix:
@@ -326,7 +331,7 @@ def scan(quiet=False):
         w, k = split_counts(tokens(decode(data)))
         ev = {"e": "v", "p": rel, "h": h, "m": round(st.st_mtime, 3), "w": w, "k": k,
               "s": round(now), "by": machine}
-        if baseline or (fresh and rel.startswith(fresh)):
+        if baseline or (fresh and rel.startswith(fresh)) or (new_ext and rel.lower().endswith(new_ext)):
             ev["base"] = 1
         elif last_scan:
             ev["ps"] = round(last_scan)  # when this machine last looked; bounds the typing time

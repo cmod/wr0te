@@ -215,6 +215,27 @@ class Scanning(Case):
         w.cmd_report(quiet=True)
         self.assertFalse(os.path.exists(os.path.join(w.LOCAL, "report-pending")))
 
+    def test_newly_watched_file_type_starts_as_baseline(self):
+        old = self.prose(120)
+        self.write("notes/old.org", old)  # there before wr0te watched .org files
+        self.write("ch1.md", "# One\n")
+        saved = w.TEXT_EXT
+        w.TEXT_EXT = w.FIRST_TEXT_EXT
+        try:
+            w.scan(quiet=True)
+        finally:
+            w.TEXT_EXT = saved
+        state_file = os.path.join(w.LOCAL, "state.json")
+        state = w.load_json(state_file, None)
+        del state["ext"]  # as written by a version that didn't record it
+        w.write_atomic(state_file, json.dumps(state).encode())
+        w.scan(quiet=True)
+        self.write("notes/old.org", old + "\n" + self.prose(25))
+        w.scan(quiet=True)
+        changes = w.build_changes(w.load_events())
+        self.assertEqual([c["kind"] for c in changes if c["path"] == "notes/old.org"], ["baseline", "edit"])
+        self.assertEqual(w.daily(changes)[w.writing_day(time.time())]["added"], 25)
+
     def test_mass_disappearance_waits_an_hour(self):
         for i in range(30):
             self.write("f%d.md" % i, "file %d\n" % i)
