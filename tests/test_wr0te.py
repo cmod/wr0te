@@ -135,6 +135,13 @@ class Scanning(Case):
             f.write(text)
         self.touch(rel)
 
+    def test_finds_text_files_in_subfolders_only(self):
+        for rel in ("a.md", "deep/er/b.org", "c.txt", "d.pdf", "deep/.#b.org", "deep/#b.org#",
+                    "deep/b.org_archive", ".hidden/e.md", "Draft.scriv/f.txt"):
+            self.write(rel, "x")
+        found = sorted(os.path.relpath(p, w.ROOT) for p in w.walk_text_files(w.ROOT))
+        self.assertEqual(found, ["a.md", "c.txt", "deep/er/b.org"])
+
     def test_scan_counts_new_writing_not_copies(self):
         self.write("Novel/ch1.md", "# Chapter one\n")
         w.scan(quiet=True)  # baseline: counts nothing

@@ -108,7 +108,7 @@ HIDE_FOLDERS = _cfg["hide_folders"]
 MENU_BAR = _cfg["menu_bar"]
 ALSO_WATCH = _cfg["also_watch"]
 
-TEXT_EXT = {".md", ".markdown", ".mdown", ".txt", ".text", ".fountain"}
+TEXT_EXT = {".md", ".markdown", ".mdown", ".txt", ".text", ".fountain", ".org"}
 # Package-style folders (Pages, RTFD, Scrivener...) are opaque; never descend into them.
 BUNDLE_EXT = (".pages", ".rtfd", ".textbundle", ".key", ".numbers", ".scriv", ".app")
 

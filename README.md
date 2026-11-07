@@ -1,7 +1,7 @@
 # wr0te
 
 An ambient writing tracker for macOS. Point it at the folder where you keep
-your writing (Markdown or plain text, in any editor). Every 5 minutes it notes
+your writing (Markdown, Org or plain text, in any editor). Every 5 minutes it notes
 what changed, then shows how much you actually wrote: per day, per project, per
 file and by hour. Text you pasted in or moved from elsewhere doesn't count.
 
