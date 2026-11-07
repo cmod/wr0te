@@ -53,12 +53,16 @@ CONFIG = os.path.join(LOCAL, "config.json")
 SETTINGS = {  # name: (default, type); config.json may set any of these
     "root": (None, str),              # the folder of writing to watch
     "data": (None, str),              # logs + snapshots; default: wr0te-data next to root
+    "also_watch": ({}, dict),         # more folders, {"name": "path"}; files show up as name/...
     "daily_goal": (2000, int),        # notify once a day when written words reach this (0 = off)
     "day_start_hour": (4, int),       # writing at 2am counts toward the previous day
     "hide_folders": ([], list),       # leading folders left off paths in reports
     "menu_bar": (True, bool),         # show today's words in the menu bar
 }
 RETIRED = {"split_folders"}  # accepted in old config files, no longer used
+
+
+FOLDER_NAME_RE = re.compile(r"[^/\\.][^/\\]*")  # one path component, not hidden
 
 
 def read_config():
@@ -78,6 +82,9 @@ def read_config():
         ok = k in SETTINGS and (v is None or isinstance(v, SETTINGS[k][1]))
         if not ok or (isinstance(v, list) and not all(isinstance(x, str) for x in v)):
             sys.exit("wr0te: %s: bad setting %r" % (CONFIG, k))
+        if isinstance(v, dict) and not all(isinstance(p, str) and FOLDER_NAME_RE.fullmatch(n)
+                                           for n, p in v.items()):
+            sys.exit("wr0te: %s: %r wants {\"name\": \"folder\"}, with plain names" % (CONFIG, k))
         if v is not None:
             cfg[k] = v
     return cfg
@@ -99,6 +106,7 @@ DAILY_GOAL = _cfg["daily_goal"]
 DAY_START_HOUR = _cfg["day_start_hour"]
 HIDE_FOLDERS = _cfg["hide_folders"]
 MENU_BAR = _cfg["menu_bar"]
+ALSO_WATCH = _cfg["also_watch"]
 
 TEXT_EXT = {".md", ".markdown", ".mdown", ".txt", ".text", ".fountain"}
 # Package-style folders (Pages, RTFD, Scrivener...) are opaque; never descend into them.
@@ -225,6 +233,12 @@ def walk_text_files(root):
                 yield os.path.join(dirpath, n)
 
 
+def watched_folders():
+    """(prefix, folder): the main folder's files are logged as-is, also_watch ones under name/."""
+    return [("", ROOT)] + [(name + "/", os.path.abspath(os.path.expanduser(path)))
+                           for name, path in sorted(ALSO_WATCH.items())]
+
+
 def scan(quiet=False):
     machine = machine_name()
     state_file = os.path.join(LOCAL, "state.json")
@@ -240,21 +254,51 @@ def scan(quiet=False):
         log_line("scan skipped: %s not available" % ROOT)
         return 0
 
-    events, seen = [], set()
-    try:
-        found = list(walk_text_files(ROOT))
-    except PermissionError as e:
-        log_line("scan: NO PERMISSION to read %s (%s) — open %s once and allow access to Dropbox"
-                 % (ROOT, e.filename, APP))
-        raise SystemExit(2)
-    for full in found:
+    # A folder added to also_watch gets its own baseline, so what's already in it isn't counted.
+    # One dropped from also_watch is forgotten quietly rather than logged as deleted.
+    known = set(state.get("also", []))
+    for name in known - set(ALSO_WATCH):
+        for rel in [r for r in files if r.startswith(name + "/")]:
+            del files[rel]
+    state["also"] = sorted(known & set(ALSO_WATCH))
+
+    events, seen, found, fresh = [], set(), [], []
+    for prefix, folder in watched_folders():
+        if not prefix:
+            try:
+                found += [(prefix, folder, full) for full in walk_text_files(folder)]
+            except PermissionError as e:
+                log_line("scan: NO PERMISSION to read %s (%s) — open %s once and allow access to Dropbox"
+                         % (ROOT, e.filename, APP))
+                raise SystemExit(2)
+            continue
+        problem = None
+        if os.path.lexists(os.path.join(ROOT, prefix[:-1])):
+            problem = "its name is also a folder in %s" % tilde(ROOT)
+        elif not os.path.isdir(folder):
+            problem = "not on this Mac"
+        else:
+            try:
+                found += [(prefix, folder, full) for full in walk_text_files(folder)]
+            except PermissionError as e:
+                problem = "no permission (%s)" % e.filename
+        if problem:  # keep what we knew, so its files don't look deleted
+            log_line("scan: skipping %s%s: %s" % (prefix, tilde(folder), problem))
+            seen.update(r for r in files if r.startswith(prefix))
+        elif prefix[:-1] not in state["also"]:
+            state["also"].append(prefix[:-1])
+            fresh.append(prefix)
+    state["also"].sort()
+    fresh = tuple(fresh)
+
+    for prefix, folder, full in found:
         try:
             st = os.lstat(full)
         except OSError:
             continue
         if not stat.S_ISREG(st.st_mode):
             continue
-        rel = os.path.relpath(full, ROOT)
+        rel = prefix + os.path.relpath(full, folder)
         seen.add(rel)
         if st.st_flags & SF_DATALESS or st.st_size > MAX_FILE:
             continue  # online-only (we'll catch it once it's local) or too big to be prose
@@ -281,7 +325,7 @@ def scan(quiet=False):
         w, k = split_counts(tokens(decode(data)))
         ev = {"e": "v", "p": rel, "h": h, "m": round(st.st_mtime, 3), "w": w, "k": k,
               "s": round(now), "by": machine}
-        if baseline:
+        if baseline or (fresh and rel.startswith(fresh)):
             ev["base"] = 1
         elif last_scan:
             ev["ps"] = round(last_scan)  # when this machine last looked; bounds the typing time
@@ -1536,6 +1580,8 @@ def cmd_status():
     print("machine:  ", machine_name())
     print("config:   ", tilde(CONFIG))
     print("root:     ", tilde(ROOT) if ROOT else "(not set: run `wr0te.py install FOLDER`)")
+    for name, path in sorted(ALSO_WATCH.items()):
+        print("also:      %s/ = %s" % (name, path))
     print("data:     ", tilde(DATA) if DATA else "—")
     r = subprocess.run(["/bin/launchctl", "print", "gui/%d/%s" % (os.getuid(), LABEL)], capture_output=True, text=True)
     if r.returncode == 0:

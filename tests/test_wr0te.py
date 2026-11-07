@@ -27,7 +27,7 @@ COMMON = "the a of and to in is it that was for on with as at by this but from".
 class Case(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="wr0te-test-")
-        self.saved = {k: getattr(w, k) for k in ("LOCAL", "CONFIG", "ROOT", "DATA", "HIDE_FOLDERS")}
+        self.saved = {k: getattr(w, k) for k in ("LOCAL", "CONFIG", "ROOT", "DATA", "HIDE_FOLDERS", "ALSO_WATCH")}
         w.LOCAL = os.path.join(self.tmp, "local")
         w.CONFIG = os.path.join(w.LOCAL, "config.json")
         w.ROOT = os.path.join(self.tmp, "writing")
@@ -152,6 +152,31 @@ class Scanning(Case):
         with open(os.path.join(w.LOCAL, "today.json")) as f:
             self.assertEqual(json.load(f)["written"], 59)
 
+    def test_also_watch_folders(self):
+        extra = os.path.join(self.tmp, "campaigns")
+        os.makedirs(os.path.join(extra, "zm"))
+        with open(os.path.join(extra, "zm", "001.md"), "w") as f:
+            f.write(self.prose(40))
+        self.write("Novel/ch1.md", "# Chapter one\n")
+        w.scan(quiet=True)
+        w.ALSO_WATCH = {"mailbot": extra}  # added later: what's there is a baseline
+        w.scan(quiet=True)
+        with open(os.path.join(extra, "zm", "002.md"), "w") as f:
+            f.write(self.prose(30))
+        w.scan(quiet=True)
+        changes = w.build_changes(w.load_events())
+        kinds = {c["path"]: c["kind"] for c in changes}
+        self.assertEqual(kinds["mailbot/zm/001.md"], "baseline")
+        self.assertEqual(w.daily(changes)[w.writing_day(time.time())]["added"], 30)
+
+        shutil.rmtree(extra)  # not on this Mac: skipped, not deleted
+        w.scan(quiet=True)
+        self.assertFalse([e for e in w.load_events() if e["e"] == "d"])
+        w.ALSO_WATCH = {}  # dropped from settings: forgotten, not deleted
+        w.scan(quiet=True)
+        self.assertFalse([e for e in w.load_events() if e["e"] == "d"])
+        self.assertEqual(list(w.load_json(os.path.join(w.LOCAL, "state.json"), {})["files"]), ["Novel/ch1.md"])
+
     def test_mass_disappearance_waits_an_hour(self):
         for i in range(30):
             self.write("f%d.md" % i, "file %d\n" % i)
@@ -234,7 +259,7 @@ class Settings(Case):
         self.assertEqual(cfg["daily_goal"], 500)
 
     def test_bad_config_stops(self):
-        for bad in ('{"root": 5}', '{"roots": "x"}', '{"hide_folders": [1]}', "{nope", "[]"):
+        for bad in ('{"root": 5}', '{"roots": "x"}', '{"hide_folders": [1]}', '{"also_watch": {"a/b": "x"}}', '{"also_watch": ["x"]}', "{nope", "[]"):
             self.write_config(bad)
             with self.assertRaises(SystemExit, msg=bad):
                 w.read_config()

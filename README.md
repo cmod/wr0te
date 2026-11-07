@@ -75,6 +75,7 @@ sets `root`; everything else is optional:
     {
       "root": "~/Dropbox/writing",
       "data": "~/Dropbox/wr0te-data",
+      "also_watch": {"newsletter": "~/Sites/newsletter/issues"},
       "daily_goal": 2000,
       "day_start_hour": 4,
       "hide_folders": ["Projects"],
@@ -83,6 +84,10 @@ sets `root`; everything else is optional:
 
 - `root`: the folder to watch.
 - `data`: where the history goes. Defaults to `wr0te-data` next to `root`.
+- `also_watch`: more folders to watch, each under a short name. Their files
+  show up in reports as `name/...`. What's already in a folder when you add it
+  is a baseline, not new writing. A folder missing on one Mac is skipped there,
+  not counted as deleted.
 - `daily_goal`: words for the daily notification. `0` turns it off.
 - `day_start_hour`: writing before this hour counts toward the previous day.
 - `hide_folders`: leading folders left off paths in reports
