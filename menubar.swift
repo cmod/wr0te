@@ -175,8 +175,26 @@ final class Bar: NSObject, NSMenuDelegate, UNUserNotificationCenterDelegate {
         center.delegate = self
         center.requestAuthorization(options: [.alert, .sound]) { _, _ in }
         refresh()
-        Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.refresh() }
-        Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in self?.deliver() }
+        deliver()
+        watch()
+    }
+
+    var watcher: DispatchSourceFileSystemObject?
+
+    /// wr0te.py writes today.json and notify.json by renaming a finished file into place, which
+    /// changes the folder; react to that instead of polling. Costs nothing while nothing happens.
+    func watch() {
+        try? FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
+        let fd = open(local.path, O_EVTONLY)
+        guard fd >= 0 else { return }
+        let source = DispatchSource.makeFileSystemObjectSource(fileDescriptor: fd, eventMask: .write, queue: .main)
+        source.setEventHandler { [weak self] in
+            self?.refresh()
+            self?.deliver()
+        }
+        source.setCancelHandler { close(fd) }
+        source.resume()
+        watcher = source
     }
 
     func load() -> Today? {
