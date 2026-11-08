@@ -121,6 +121,47 @@ func scriptNotification(_ note: Note) {
     try? p.run()
 }
 
+/// The day's goal as 100 small boxes (4 rows of 25), each 1% of it, filling in as you write. The box
+/// you're on fills partway, so it moves even between whole percents.
+final class GoalBoxes: NSView {
+    static let count = 100, perRow = 25
+    static let size: CGFloat = 8, gap: CGFloat = 2, inset: CGFloat = 14, pad: CGFloat = 6
+    let filled: Double  // in boxes, 0...100
+
+    init(written: Int, goal: Int) {
+        filled = min(Double(written) / Double(max(goal, 1)) * Double(Self.count), Double(Self.count))
+        let rows = Self.count / Self.perRow
+        let width = Self.inset * 2 + CGFloat(Self.perRow) * Self.size + CGFloat(Self.perRow - 1) * Self.gap
+        let height = Self.pad * 2 + CGFloat(rows) * Self.size + CGFloat(rows - 1) * Self.gap
+        super.init(frame: NSRect(x: 0, y: 0, width: width, height: height))
+        setAccessibilityElement(true)
+        setAccessibilityRole(.progressIndicator)
+        setAccessibilityLabel("\(min(written * 100 / max(goal, 1), 100))% of today's goal")
+    }
+
+    required init?(coder: NSCoder) { fatalError("not used") }
+
+    override var isFlipped: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        for i in 0..<Self.count {
+            let col = CGFloat(i % Self.perRow), row = CGFloat(i / Self.perRow)
+            let box = NSRect(x: Self.inset + col * (Self.size + Self.gap), y: Self.pad + row * (Self.size + Self.gap),
+                             width: Self.size, height: Self.size)
+            let shape = NSBezierPath(roundedRect: box, xRadius: 1.5, yRadius: 1.5)
+            NSColor.quaternaryLabelColor.setFill()
+            shape.fill()
+            let part = min(max(filled - Double(i), 0), 1)
+            guard part > 0 else { continue }
+            NSGraphicsContext.saveGraphicsState()
+            shape.addClip()
+            NSColor.controlAccentColor.setFill()
+            NSRect(x: box.minX, y: box.minY, width: box.width * CGFloat(part), height: box.height).fill()
+            NSGraphicsContext.restoreGraphicsState()
+        }
+    }
+}
+
 final class Bar: NSObject, NSMenuDelegate, UNUserNotificationCenterDelegate {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     let menu = NSMenu()
@@ -163,6 +204,11 @@ final class Bar: NSObject, NSMenuDelegate, UNUserNotificationCenterDelegate {
             menu.addItem(NSMenuItem(title: text, action: nil, keyEquivalent: ""))
         }
         if let t = t {
+            if t.goal > 0 {
+                let boxes = NSMenuItem()
+                boxes.view = GoalBoxes(written: written, goal: t.goal)
+                menu.addItem(boxes)
+            }
             line(plural(written, "word") + " today")
             if fresh && (t.removed > 0 || t.files > 0) {
                 line("−\(number(t.removed)) removed · \(plural(t.files, "file")) · \(minutes(t.active_minutes)) active")

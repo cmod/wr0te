@@ -64,8 +64,8 @@ The report is rebuilt in the background whenever something changes, at
 spreadsheets.
 
 The menu bar pencil gets a check mark once you reach the day's goal. Click it
-for today's words, words removed, files, active time, goal progress and days
-written. **Copy Today's Stats** (⌘C) copies a one-line summary, and **Open
+for today's goal as 100 small boxes that fill in as you write (each is 1% of
+it), then today's words, words removed, files, active time and days written. **Copy Today's Stats** (⌘C) copies a one-line summary, and **Open
 Report** scans right away, rebuilds the report and opens it in your browser.
 Quit hides it until you next log in; set `"menu_bar": false` and run `install`
 again to turn it off.
