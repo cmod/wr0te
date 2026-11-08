@@ -70,12 +70,14 @@ the menu bar app, the notification comes from Script Editor instead.
 ## Settings
 
 Settings live in `~/Library/Application Support/wr0te/config.json`. `install`
-sets `root`; everything else is optional:
+sets the first folder; everything else is optional:
 
     {
-      "root": "~/Dropbox/writing",
+      "folders": [
+        {"path": "~/Dropbox/writing"},
+        {"name": "newsletter", "path": "~/Sites/newsletter/issues"}
+      ],
       "data": "~/Dropbox/wr0te-data",
-      "also_watch": {"newsletter": "~/Sites/newsletter/issues"},
       "daily_goal": 2000,
       "day_start_hour": 4,
       "hide_folders": ["Projects"],
@@ -83,12 +85,13 @@ sets `root`; everything else is optional:
       "show_streak": true
     }
 
-- `root`: the folder to watch.
-- `data`: where the history goes. Defaults to `wr0te-data` next to `root`.
-- `also_watch`: more folders to watch, each under a short name. Their files
-  show up in reports as `name/...`. What's already in a folder when you add it
-  is a baseline, not new writing. A folder missing on one Mac is skipped there,
-  not counted as deleted.
+- `folders`: the folders to watch. A folder's files show up in reports as
+  `name/...`; one folder can go without a name, and its files show up as they
+  are. What's already in a folder when you add it is a baseline, not new
+  writing. A folder missing on one Mac is skipped there, not counted as
+  deleted. (Older settings files used `root` and `also_watch`; they still work.)
+- `data`: where the history goes. Defaults to `wr0te-data` next to the folder
+  without a name.
 - `daily_goal`: words for the daily notification. `0` turns it off.
 - `day_start_hour`: writing before this hour counts toward the previous day.
 - `hide_folders`: leading folders left off paths in reports
@@ -97,7 +100,7 @@ sets `root`; everything else is optional:
 - `menu_bar`: today's words in the menu bar. Run `install` again after changing it.
 
 The menu bar's **Settings…** (⌘,) edits the folders, goal, day start and
-streak without opening the file. wr0te reads the file every time it runs, so there's nothing to restart. The `WR0TE_ROOT`, `WR0TE_DATA` and
+streak without opening the file, and **Update Now** (⌘U) scans right away. wr0te reads the file every time it runs, so there's nothing to restart. The `WR0TE_ROOT`, `WR0TE_DATA` and
 `WR0TE_MACHINE` environment variables override the paths and this Mac's name.
 Tuning constants (typing speed, fingerprint size) are at the top of `wr0te.py`.
 
@@ -115,7 +118,7 @@ file, and a change seen by two Macs counts once.
 - The goal notification comes once a day, from whichever Mac was used in the
   last 10 minutes.
 - Settings are per Mac, so copy `config.json` across if you've changed more
-  than `root`.
+  than the first folder.
 
 ## What counts
 
@@ -151,8 +154,8 @@ Limits:
 
 | What | Where | Synced? |
 |---|---|---|
-| Every Mac's log of changes | `wr0te-data/logs/<machine>/YYYY-MM.jsonl` | with `root` |
-| Every distinct file version, gzipped | `wr0te-data/snapshots/` | with `root` |
+| Every Mac's log of changes | `wr0te-data/logs/<machine>/YYYY-MM.jsonl` | with your writing, if `data` is in Dropbox |
+| Every distinct file version, gzipped | `wr0te-data/snapshots/` | with your writing, if `data` is in Dropbox |
 | Settings, scan state, index, report, `daily.csv` | `~/Library/Application Support/wr0te/` | no |
 | Launcher and menu bar apps | `~/Applications/wr0te.app`, `wr0te-menu.app` | no |
 

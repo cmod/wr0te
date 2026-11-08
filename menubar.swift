@@ -176,6 +176,11 @@ final class Bar: NSObject, NSMenuDelegate, UNUserNotificationCenterDelegate {
             line("No stats yet")
         }
         menu.addItem(.separator())
+        let update = NSMenuItem(title: building ? "Updating…" : "Update Now", action: #selector(updateNow),
+                                keyEquivalent: "u")
+        update.target = self
+        update.isEnabled = !building
+        menu.addItem(update)
         let copy = NSMenuItem(title: "Copy Today's Stats", action: #selector(copyStats), keyEquivalent: "c")
         copy.target = self
         copy.isEnabled = t != nil
@@ -245,6 +250,10 @@ final class Bar: NSObject, NSMenuDelegate, UNUserNotificationCenterDelegate {
         completionHandler([.banner, .list])
     }
 
+    @objc func updateNow() {
+        rebuild()
+    }
+
     @objc func openReport() {
         rebuild { NSWorkspace.shared.open(reportFile) }
     }
@@ -299,12 +308,10 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 400),
                           styleMask: [.titled, .closable], backing: .buffered, defer: false)
     var config: [String: Any]
-    var root: String?
-    var extras: [(name: String, path: String)]
+    var folders: [(name: String, path: String)]  // name "" = files show up as they are
     let saved: () -> Void
     var onClose: () -> Void = {}
 
-    let rootLabel = NSTextField(labelWithString: "")
     let table = NSTableView()
     let addRemove = NSSegmentedControl(labels: ["+", "−"], trackingMode: .momentary, target: nil, action: nil)
     let goalField = NSTextField()
@@ -314,14 +321,22 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     init(config: [String: Any], saved: @escaping () -> Void) {
         self.config = config
         self.saved = saved
-        root = config["root"] as? String
-        extras = ((config["also_watch"] as? [String: String]) ?? [:]).sorted { $0.key < $1.key }
-            .map { (name: $0.key, path: $0.value) }
+        folders = SettingsWindow.folders(in: config)
         super.init()
         window.title = "wr0te Settings"
         window.isReleasedWhenClosed = false
         window.delegate = self
         build()
+    }
+
+    /// The folders in config.json, in either its current form or the older root + also_watch.
+    static func folders(in c: [String: Any]) -> [(name: String, path: String)] {
+        if let list = c["folders"] as? [[String: String]] {
+            return list.compactMap { f in f["path"].map { (name: f["name"] ?? "", path: $0) } }
+        }
+        let root = (c["root"] as? String).map { [(name: "", path: $0)] } ?? []
+        return root + ((c["also_watch"] as? [String: String]) ?? [:]).sorted { $0.key < $1.key }
+            .map { (name: $0.key, path: $0.value) }
     }
 
     func build() {
@@ -343,12 +358,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
             return b
         }
 
-        rootLabel.stringValue = root ?? "(none)"
-        rootLabel.lineBreakMode = .byTruncatingMiddle
-        rootLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let rootRow = NSStackView(views: [rootLabel, button("Choose…", #selector(chooseRoot))])
-
-        for (id, title, width) in [("name", "Name", 110.0), ("path", "Folder", 270.0)] {
+        for (id, title, width) in [("path", "Folder", 270.0), ("name", "Shown as", 110.0)] {
             let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id))
             col.title = title
             col.width = CGFloat(width)
@@ -367,10 +377,11 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         scroll.widthAnchor.constraint(equalToConstant: 390).isActive = true
         addRemove.target = self
         addRemove.action = #selector(addOrRemove)
-        let extrasBox = NSStackView(views: [scroll, addRemove,
-                                            note("Files show up in reports as name/…. Double-click a name to change it.")])
-        extrasBox.orientation = .vertical
-        extrasBox.alignment = .leading
+        let folderBox = NSStackView(views: [scroll, addRemove, note(
+            "Files show up in reports under the folder's name (name/…); double-click to change it. "
+            + "One folder can go without a name, and its files show up as they are.")])
+        folderBox.orientation = .vertical
+        folderBox.alignment = .leading
 
         let fmt = NumberFormatter()
         fmt.allowsFloats = false
@@ -391,8 +402,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         streakBox.state = (config["show_streak"] as? Bool ?? true) ? .on : .off
 
         let grid = NSGridView(views: [
-            [label("Writing folder:"), rootRow],
-            [label("Also watch:"), extrasBox],
+            [label("Folders to watch:"), folderBox],
             [label("Daily goal:"), goalRow],
             [label("Day starts at:"), dayRow],
             [NSGridCell.emptyContentView, streakBox],
@@ -400,8 +410,8 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         grid.rowSpacing = 14
         grid.columnSpacing = 10
         grid.rowAlignment = .firstBaseline
-        grid.row(at: 1).rowAlignment = .none
-        grid.cell(atColumnIndex: 0, rowIndex: 1).yPlacement = .top
+        grid.row(at: 0).rowAlignment = .none
+        grid.cell(atColumnIndex: 0, rowIndex: 0).yPlacement = .top
 
         let cancel = button("Cancel", #selector(cancel))
         cancel.keyEquivalent = "\u{1b}"
@@ -438,47 +448,43 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         return panel.runModal() == .OK ? panel.urls : []
     }
 
-    @objc func chooseRoot() {
-        guard let url = pickFolders(multiple: false).first else { return }
-        root = tilde(url.path)
-        rootLabel.stringValue = root!
-    }
-
     @objc func addOrRemove() {
         if addRemove.selectedSegment == 1 {
             let row = table.selectedRow
             if row >= 0 {
-                extras.remove(at: row)
+                folders.remove(at: row)
                 table.reloadData()
             }
             return
         }
-        for url in pickFolders(multiple: true) {
+        for url in pickFolders(multiple: true) where !folders.contains(where: { expand($0.path) == url.path }) {
             var base = url.lastPathComponent
             while base.hasPrefix(".") { base.removeFirst() }
             if !validName(base) { base = "folder" }
             var name = base, n = 2
-            while extras.contains(where: { $0.name == name }) {
+            while folders.contains(where: { $0.name == name }) {
                 name = "\(base)-\(n)"
                 n += 1
             }
-            extras.append((name: name, path: tilde(url.path)))
+            folders.append((name: name, path: tilde(url.path)))
         }
         table.reloadData()
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int {
-        extras.count
+        folders.count
     }
 
     func tableView(_ tableView: NSTableView, objectValueFor col: NSTableColumn?, row: Int) -> Any? {
-        col?.identifier.rawValue == "name" ? extras[row].name : extras[row].path
+        col?.identifier.rawValue == "name" ? folders[row].name : folders[row].path
     }
 
+    /// A name must be plain and not used by another folder; empty is fine for one folder.
     func tableView(_ tableView: NSTableView, setObjectValue value: Any?, for col: NSTableColumn?, row: Int) {
         let name = ((value as? String) ?? "").trimmingCharacters(in: .whitespaces)
-        if validName(name) && !extras.enumerated().contains(where: { $0.offset != row && $0.element.name == name }) {
-            extras[row].name = name
+        let taken = folders.enumerated().contains { $0.offset != row && $0.element.name == name }
+        if (name.isEmpty || validName(name)) && !taken {
+            folders[row].name = name
         } else {
             NSSound.beep()
         }
@@ -492,16 +498,21 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     @objc func save() {
         window.makeFirstResponder(nil)  // commit a name or goal still being edited
         guard let fresh = readConfig() else { return }
-        var c = fresh  // reread, in case the file changed while the window was open
-        if let r = root, r != c["root"] as? String {
-            // History defaults to wr0te-data next to the folder; keep it where it is.
-            if c["data"] == nil, let old = c["root"] as? String {
-                let oldRoot = URL(fileURLWithPath: expand(old)).standardizedFileURL
-                c["data"] = tilde(oldRoot.deletingLastPathComponent().appendingPathComponent("wr0te-data").path)
-            }
-            c["root"] = r
+        guard !folders.isEmpty else {
+            NSSound.beep()
+            return
         }
-        c["also_watch"] = Dictionary(uniqueKeysWithValues: extras.map { ($0.name, $0.path) })
+        var c = fresh  // reread, in case the file changed while the window was open
+        // History defaults to wr0te-data next to the folder without a name: pin it where it is now,
+        // so changing folders never leaves it behind.
+        let old = SettingsWindow.folders(in: c)
+        if c["data"] == nil, let main = old.first(where: { $0.name.isEmpty }) ?? old.first {
+            let dir = URL(fileURLWithPath: expand(main.path)).standardizedFileURL.deletingLastPathComponent()
+            c["data"] = tilde(dir.appendingPathComponent("wr0te-data").path)
+        }
+        c["folders"] = folders.map { $0.name.isEmpty ? ["path": $0.path] : ["name": $0.name, "path": $0.path] }
+        c.removeValue(forKey: "root")
+        c.removeValue(forKey: "also_watch")
         c["daily_goal"] = goalField.integerValue
         c["day_start_hour"] = dayStart.indexOfSelectedItem
         c["show_streak"] = streakBox.state == .on

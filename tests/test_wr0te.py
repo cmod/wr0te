@@ -27,12 +27,13 @@ COMMON = "the a of and to in is it that was for on with as at by this but from".
 class Case(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="wr0te-test-")
-        self.saved = {k: getattr(w, k) for k in ("LOCAL", "CONFIG", "ROOT", "DATA", "HIDE_FOLDERS", "ALSO_WATCH", "SHOW_STREAK")}
+        self.saved = {k: getattr(w, k) for k in ("LOCAL", "CONFIG", "FOLDERS", "DATA", "HIDE_FOLDERS", "SHOW_STREAK")}
         w.LOCAL = os.path.join(self.tmp, "local")
         w.CONFIG = os.path.join(w.LOCAL, "config.json")
-        w.ROOT = os.path.join(self.tmp, "writing")
+        self.root = os.path.join(self.tmp, "writing")
+        w.FOLDERS = [("", self.root)]
         w.DATA = os.path.join(self.tmp, "wr0te-data")
-        os.makedirs(w.ROOT)
+        os.makedirs(self.root)
         os.environ["WR0TE_MACHINE"] = "test"
         self.rng = random.Random(1)
         self.vocab = ["w%d" % i for i in range(5000)]
@@ -126,10 +127,10 @@ class Counting(Case):
 class Scanning(Case):
     def touch(self, rel, ahead=1):
         t = time.time() + ahead  # saved after the last scan
-        os.utime(os.path.join(w.ROOT, rel), (t, t))
+        os.utime(os.path.join(self.root, rel), (t, t))
 
     def write(self, rel, text):
-        path = os.path.join(w.ROOT, rel)
+        path = os.path.join(self.root, rel)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
             f.write(text)
@@ -139,7 +140,7 @@ class Scanning(Case):
         for rel in ("a.md", "deep/er/b.org", "c.txt", "d.pdf", "deep/.#b.org", "deep/#b.org#",
                     "deep/b.org_archive", ".hidden/e.md", "Draft.scriv/f.txt"):
             self.write(rel, "x")
-        found = sorted(os.path.relpath(p, w.ROOT) for p in w.walk_text_files(w.ROOT))
+        found = sorted(os.path.relpath(p, self.root) for p in w.walk_text_files(self.root))
         self.assertEqual(found, ["a.md", "c.txt", "deep/er/b.org"])
 
     def test_scan_counts_new_writing_not_copies(self):
@@ -147,7 +148,7 @@ class Scanning(Case):
         w.scan(quiet=True)  # baseline: counts nothing
         self.write("Novel/ch1.md", "# Chapter one\n\n" + self.prose(59) + "\n")
         w.scan(quiet=True)
-        shutil.copy(os.path.join(w.ROOT, "Novel/ch1.md"), os.path.join(w.ROOT, "Novel/ch1 copy.md"))
+        shutil.copy(os.path.join(self.root, "Novel/ch1.md"), os.path.join(self.root, "Novel/ch1 copy.md"))
         self.touch("Novel/ch1 copy.md", ahead=2)
         w.scan(quiet=True)
         changes = w.build_changes(w.load_events())
@@ -166,7 +167,7 @@ class Scanning(Case):
             f.write(self.prose(40))
         self.write("Novel/ch1.md", "# Chapter one\n")
         w.scan(quiet=True)
-        w.ALSO_WATCH = {"zine": extra}  # added later: what's there is a baseline
+        w.FOLDERS = [("", self.root), ("zine", extra)]  # added later: what's there is a baseline
         w.scan(quiet=True)
         with open(os.path.join(extra, "spring", "002.md"), "w") as f:
             f.write(self.prose(30))
@@ -179,7 +180,7 @@ class Scanning(Case):
         shutil.rmtree(extra)  # not on this Mac: skipped, not deleted
         w.scan(quiet=True)
         self.assertFalse([e for e in w.load_events() if e["e"] == "d"])
-        w.ALSO_WATCH = {}  # dropped from settings: forgotten, not deleted
+        w.FOLDERS = [("", self.root)]  # dropped from settings: forgotten, not deleted
         w.scan(quiet=True)
         self.assertFalse([e for e in w.load_events() if e["e"] == "d"])
         self.assertEqual(list(w.load_json(os.path.join(w.LOCAL, "state.json"), {})["files"]), ["Novel/ch1.md"])
@@ -247,12 +248,39 @@ class Scanning(Case):
             self.assertEqual("longest" in page, show)
             self.assertEqual("Days written" in page, show)
 
+    def test_old_state_carries_over(self):
+        extra = os.path.join(self.tmp, "zine")
+        os.makedirs(extra)
+        with open(os.path.join(extra, "1.md"), "w") as f:
+            f.write(self.prose(40))
+        self.write("a.md", self.prose(40))
+        w.FOLDERS = [("", self.root), ("zine", extra)]
+        w.scan(quiet=True)
+        state_file = os.path.join(w.LOCAL, "state.json")
+        state = w.load_json(state_file, None)
+        del state["folders"]  # as older versions kept it
+        state.update(root=self.root, also=["zine"])
+        w.write_atomic(state_file, json.dumps(state).encode())
+        self.assertEqual(w.scan(quiet=True), 0)  # nothing re-baselined, nothing deleted
+        self.assertEqual(w.load_json(state_file, None)["folders"], {"": self.root, "zine/": extra})
+
+    def test_moving_a_folder_starts_it_over(self):
+        self.write("a.md", self.prose(40))
+        w.scan(quiet=True)
+        moved = os.path.join(self.tmp, "elsewhere")
+        shutil.copytree(self.root, moved)
+        w.FOLDERS = [("", moved)]
+        w.scan(quiet=True)
+        evs = w.load_events()
+        self.assertFalse([e for e in evs if e["e"] == "d"])
+        self.assertEqual([e.get("base") for e in evs], [1, 1])
+
     def test_mass_disappearance_waits_an_hour(self):
         for i in range(30):
             self.write("f%d.md" % i, "file %d\n" % i)
         w.scan(quiet=True)
         for i in range(30):
-            os.remove(os.path.join(w.ROOT, "f%d.md" % i))
+            os.remove(os.path.join(self.root, "f%d.md" % i))
         w.scan(quiet=True)
         self.assertFalse([e for e in w.load_events() if e["e"] == "d"])  # maybe just unmounted
 
@@ -319,13 +347,13 @@ class Settings(Case):
     def test_defaults_without_config(self):
         cfg = w.read_config()
         self.assertIsNone(cfg["root"])
-        self.assertEqual(w.resolve_paths(cfg), (None, None))
+        self.assertEqual(w.resolve_paths(cfg), ([], None))
 
     def test_data_defaults_next_to_root(self):
         self.write_config({"root": "~/Writing/", "daily_goal": 500})
         cfg = w.read_config()
         home = os.path.expanduser("~")
-        self.assertEqual(w.resolve_paths(cfg), (home + "/Writing", home + "/wr0te-data"))
+        self.assertEqual(w.resolve_paths(cfg), ([("", home + "/Writing")], home + "/wr0te-data"))
         self.assertEqual(cfg["daily_goal"], 500)
 
     def test_bad_config_stops(self):
@@ -343,6 +371,17 @@ class Settings(Case):
         labels = w.project_labels(["Novels/Harbor", "Essays/Drafts", "Novel/Drafts", "Journals/2026"])
         self.assertEqual(labels, {"Novels/Harbor": "Harbor", "Essays/Drafts": "Essays/Drafts",
                                   "Novel/Drafts": "Novel/Drafts", "Journals/2026": "2026"})
+
+    def test_folder_list(self):
+        self.write_config({"folders": [{"path": "~/Writing"}, {"name": "zine", "path": "~/Zine"}]})
+        home = os.path.expanduser("~")
+        self.assertEqual(w.resolve_paths(w.read_config()),
+                         ([("", home + "/Writing"), ("zine", home + "/Zine")], home + "/wr0te-data"))
+        for bad in ([{"path": "~/a"}, {"path": "~/b"}], [{"name": "x", "path": "~/a"}, {"name": "x", "path": "~/b"}],
+                    [{"name": ".x", "path": "~/a"}], [{"path": "~/a", "extra": 1}], ["~/a"], [{"name": "x"}]):
+            self.write_config({"folders": bad})
+            with self.assertRaises(SystemExit, msg=bad):
+                w.read_config()
 
     def test_retired_setting_is_ignored(self):
         self.write_config({"root": "~/Writing", "split_folders": ["Journals"]})

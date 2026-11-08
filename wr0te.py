@@ -51,9 +51,10 @@ from collections import Counter, defaultdict
 LOCAL = os.path.expanduser(os.environ.get("WR0TE_LOCAL", "~/Library/Application Support/wr0te"))
 CONFIG = os.path.join(LOCAL, "config.json")
 SETTINGS = {  # name: (default, type); config.json may set any of these
-    "root": (None, str),              # the folder of writing to watch
-    "data": (None, str),              # logs + snapshots; default: wr0te-data next to root
-    "also_watch": ({}, dict),         # more folders, {"name": "path"}; files show up as name/...
+    "folders": (None, list),          # [{"path": ..., "name": ...}]: files show up as name/..., or as-is
+    "data": (None, str),              # logs + snapshots; default: wr0te-data next to the folder without a name
+    "root": (None, str),              # older form of folders: the one without a name
+    "also_watch": ({}, dict),         # older form of folders: {"name": "path"}
     "daily_goal": (2000, int),        # notify once a day when written words reach this (0 = off)
     "day_start_hour": (4, int),       # writing at 2am counts toward the previous day
     "hide_folders": ([], list),       # leading folders left off paths in reports
@@ -64,6 +65,16 @@ RETIRED = {"split_folders"}  # accepted in old config files, no longer used
 
 
 FOLDER_NAME_RE = re.compile(r"[^/\\.][^/\\]*")  # one path component, not hidden
+
+
+def good_folders(v):
+    for f in v:
+        if not (isinstance(f, dict) and set(f) <= {"path", "name"} and isinstance(f.get("path"), str)):
+            return False
+        if "name" in f and not (isinstance(f["name"], str) and FOLDER_NAME_RE.fullmatch(f["name"])):
+            return False
+    names = [f.get("name") for f in v]
+    return names.count(None) <= 1 and len(set(names)) == len(names)
 
 
 def read_config():
@@ -81,7 +92,11 @@ def read_config():
         if k in RETIRED:
             continue
         ok = k in SETTINGS and (v is None or isinstance(v, SETTINGS[k][1]))
-        if not ok or (isinstance(v, list) and not all(isinstance(x, str) for x in v)):
+        if k == "folders" and ok and v is not None:
+            if not good_folders(v):
+                sys.exit("wr0te: %s: \"folders\" wants [{\"path\": \"folder\", \"name\": \"name\"}], with "
+                         "plain, different names; one folder may go without a name" % CONFIG)
+        elif not ok or (isinstance(v, list) and not all(isinstance(x, str) for x in v)):
             sys.exit("wr0te: %s: bad setting %r" % (CONFIG, k))
         if isinstance(v, dict) and not all(isinstance(p, str) and FOLDER_NAME_RE.fullmatch(n)
                                            for n, p in v.items()):
@@ -92,23 +107,29 @@ def read_config():
 
 
 def resolve_paths(cfg):
-    """(root, data); the WR0TE_ROOT / WR0TE_DATA environment variables win over config.json."""
-    root = os.environ.get("WR0TE_ROOT") or cfg["root"]
-    if not root:
-        return None, None
-    root = os.path.abspath(os.path.expanduser(root))
-    data = os.environ.get("WR0TE_DATA") or cfg["data"] or os.path.join(os.path.dirname(root), "wr0te-data")
-    return root, os.path.abspath(os.path.expanduser(data))
+    """([(name, folder)], data), with name "" for the folder whose files are logged as they are.
+    The WR0TE_ROOT / WR0TE_DATA environment variables win over config.json."""
+    if cfg["folders"] is not None:
+        pairs = [(f.get("name", ""), f["path"]) for f in cfg["folders"]]
+    else:
+        pairs = ([("", cfg["root"])] if cfg["root"] else []) + sorted(cfg["also_watch"].items())
+    if os.environ.get("WR0TE_ROOT"):
+        pairs = [("", os.environ["WR0TE_ROOT"])] + [p for p in pairs if p[0]]
+    folders = [(n, os.path.abspath(os.path.expanduser(p))) for n, p in pairs]
+    if not folders:
+        return [], None
+    main = dict(folders).get("", folders[0][1])
+    data = os.environ.get("WR0TE_DATA") or cfg["data"] or os.path.join(os.path.dirname(main), "wr0te-data")
+    return folders, os.path.abspath(os.path.expanduser(data))
 
 
 _cfg = read_config()
-ROOT, DATA = resolve_paths(_cfg)
+FOLDERS, DATA = resolve_paths(_cfg)
 DAILY_GOAL = _cfg["daily_goal"]
 DAY_START_HOUR = _cfg["day_start_hour"]
 HIDE_FOLDERS = _cfg["hide_folders"]
 MENU_BAR = _cfg["menu_bar"]
 SHOW_STREAK = _cfg["show_streak"]
-ALSO_WATCH = _cfg["also_watch"]
 
 TEXT_EXT = {".md", ".markdown", ".mdown", ".txt", ".text", ".fountain", ".org"}
 FIRST_TEXT_EXT = {".md", ".markdown", ".mdown", ".txt", ".text", ".fountain"}  # before scan state kept the list
@@ -238,66 +259,60 @@ def walk_text_files(root):
 
 
 def watched_folders():
-    """(prefix, folder): the main folder's files are logged as-is, also_watch ones under name/."""
-    return [("", ROOT)] + [(name + "/", os.path.abspath(os.path.expanduser(path)))
-                           for name, path in sorted(ALSO_WATCH.items())]
+    """(prefix, folder): a named folder's files are logged as name/..., the other one's as they are."""
+    return [(name + "/" if name else "", path) for name, path in FOLDERS]
 
 
 def scan(quiet=False):
     machine = machine_name()
     state_file = os.path.join(LOCAL, "state.json")
-    state = load_json(state_file, None)
-    baseline = state is None or state.get("root") != ROOT
-    if baseline:
-        state = {"root": ROOT, "files": {}}
-    last_scan = None if baseline else state.get("last_scan")
+    state = load_json(state_file, None) or {"files": {}}
     files = state["files"]
     now = time.time()
+    folders = watched_folders()
+    current = dict(folders)
 
-    if not os.path.isdir(ROOT):
-        log_line("scan skipped: %s not available" % ROOT)
-        return 0
+    # Where each known file came from, by prefix. Older state kept "root" and "also" instead.
+    known = state.get("folders")
+    if known is None:
+        known = {"": state["root"]} if state.get("root") else {}
+        known.update({p: f for p, f in folders if p and p[:-1] in state.get("also", [])})
 
-    # A folder added to also_watch gets its own baseline, so what's already in it isn't counted.
-    # One dropped from also_watch is forgotten quietly rather than logged as deleted.
-    known = set(state.get("also", []))
-    for name in known - set(ALSO_WATCH):
-        for rel in [r for r in files if r.startswith(name + "/")]:
-            del files[rel]
-    state["also"] = sorted(known & set(ALSO_WATCH))
+    def owner(rel):
+        return next((p for p in known if p and rel.startswith(p)), "")
+
+    # A folder that's new, or now points somewhere else, starts as a baseline so what's already in it
+    # isn't counted; one gone from settings is forgotten rather than logged as deleted.
+    for rel in [r for r in files if known.get(owner(r)) != current.get(owner(r))]:
+        del files[rel]
+    fresh = {p for p, f in folders if known.get(p) != f}
+    first = not known
+    last_scan = None if first else state.get("last_scan")
 
     # Likewise files of a type wr0te has just started watching: they were already there.
-    new_ext = () if baseline else tuple(sorted(TEXT_EXT - set(state.get("ext", FIRST_TEXT_EXT))))
+    new_ext = () if first else tuple(sorted(TEXT_EXT - set(state.get("ext", FIRST_TEXT_EXT))))
     state["ext"] = sorted(TEXT_EXT)
 
-    events, seen, found, fresh = [], set(), [], []
-    for prefix, folder in watched_folders():
-        if not prefix:
-            try:
-                found += [(prefix, folder, full) for full in walk_text_files(folder)]
-            except PermissionError as e:
-                log_line("scan: NO PERMISSION to read %s (%s) — open %s once and allow access to Dropbox"
-                         % (ROOT, e.filename, APP))
-                raise SystemExit(2)
-            continue
+    events, seen, found, scanned = [], set(), [], {}
+    main = current.get("")
+    for prefix, folder in folders:
         problem = None
-        if os.path.lexists(os.path.join(ROOT, prefix[:-1])):
-            problem = "its name is also a folder in %s" % tilde(ROOT)
+        if prefix and main and os.path.lexists(os.path.join(main, prefix[:-1])):
+            problem = "its name is also a folder in %s" % tilde(main)
         elif not os.path.isdir(folder):
-            problem = "not on this Mac"
+            problem = "not available"
         else:
             try:
                 found += [(prefix, folder, full) for full in walk_text_files(folder)]
             except PermissionError as e:
-                problem = "no permission (%s)" % e.filename
+                problem = "NO PERMISSION to read %s — open %s once and allow access" % (e.filename, APP)
         if problem:  # keep what we knew, so its files don't look deleted
-            log_line("scan: skipping %s%s: %s" % (prefix, tilde(folder), problem))
-            seen.update(r for r in files if r.startswith(prefix))
-        elif prefix[:-1] not in state["also"]:
-            state["also"].append(prefix[:-1])
-            fresh.append(prefix)
-    state["also"].sort()
-    fresh = tuple(fresh)
+            log_line("scan: skipping %s: %s" % (tilde(folder), problem))
+            seen.update(r for r in files if owner(r) == prefix)
+            if known.get(prefix) == folder:
+                scanned[prefix] = folder
+        else:
+            scanned[prefix] = folder
 
     for prefix, folder, full in found:
         try:
@@ -333,7 +348,7 @@ def scan(quiet=False):
         w, k = split_counts(tokens(decode(data)))
         ev = {"e": "v", "p": rel, "h": h, "m": round(st.st_mtime, 3), "w": w, "k": k,
               "s": round(now), "by": machine}
-        if baseline or (fresh and rel.startswith(fresh)) or (new_ext and rel.lower().endswith(new_ext)):
+        if prefix in fresh or (new_ext and rel.lower().endswith(new_ext)):
             ev["base"] = 1
         elif last_scan:
             ev["ps"] = round(last_scan)  # when this machine last looked; bounds the typing time
@@ -354,10 +369,13 @@ def scan(quiet=False):
         month = dt.datetime.fromtimestamp(now).strftime("%Y-%m")
         logp = os.path.join(DATA, "logs", machine, month + ".jsonl")
         append_nofollow(logp, "".join(json.dumps(ev, ensure_ascii=False) + "\n" for ev in events))
+    state["folders"] = scanned
+    state.pop("root", None)
+    state.pop("also", None)
     state["last_scan"] = now
     write_atomic(state_file, json.dumps(state).encode())
     msg = "scan: %d files, %d events%s (%.2fs)" % (
-        len(seen), len(events), " [baseline]" if baseline else "", time.time() - now)
+        len(seen), len(events), " [baseline]" if first else "", time.time() - now)
     log_line(msg)
     if not quiet:
         print(msg)
@@ -1292,7 +1310,7 @@ def cmd_report(open_it=False, quiet=False):
 
     state = load_json(os.path.join(LOCAL, "state.json"), None)
     machines = sorted({c["by"] for c in changes})
-    meta = [esc(tilde(ROOT))]
+    meta = [esc(", ".join(tilde(f) for _, f in FOLDERS))]
     if isinstance(state, dict) and state.get("files"):
         meta.append(plural(len(state["files"]), "file"))  # there now, not ever
     if machines:
@@ -1547,16 +1565,19 @@ def unload_agent(label):
 
 
 def cmd_install(folder=None):
-    global ROOT, DATA
+    global FOLDERS, DATA
     if folder:
         folder = os.path.abspath(os.path.expanduser(folder))
         if not os.path.isdir(folder):
             sys.exit("wr0te: %s is not a folder" % folder)
         cfg = load_json(CONFIG, {})  # already checked by read_config()
-        cfg["root"] = tilde(folder)
+        if "folders" in cfg:  # it becomes the folder without a name
+            cfg["folders"] = [{"path": tilde(folder)}] + [f for f in cfg["folders"] if f.get("name")]
+        else:
+            cfg["root"] = tilde(folder)
         write_atomic(CONFIG, (json.dumps(cfg, indent=2, ensure_ascii=False) + "\n").encode())
-        ROOT, DATA = resolve_paths(read_config())
-    if not ROOT:
+        FOLDERS, DATA = resolve_paths(read_config())
+    if not FOLDERS:
         sys.exit("usage: wr0te.py install FOLDER   (the folder of writing to watch)")
     script = os.path.abspath(__file__)
     exe, rebuilt = build_app(script)
@@ -1573,7 +1594,8 @@ def cmd_install(folder=None):
   <key>StandardOutPath</key><string>{local}/agent.log</string>
   <key>StandardErrorPath</key><string>{local}/agent.log</string>
 """.format(exe=html.escape(exe), env=env, interval=SCAN_INTERVAL, local=html.escape(LOCAL)))
-    print("installed %s — scanning %s every %d min" % (LABEL, ROOT, SCAN_INTERVAL // 60))
+    print("installed %s — scanning %s every %d min"
+          % (LABEL, ", ".join(tilde(f) for _, f in FOLDERS), SCAN_INTERVAL // 60))
     if MENU_BAR:
         # Quitting from the menu exits cleanly, which keeps it quit until the next login.
         load_agent(MENU_LABEL, """  <key>ProgramArguments</key><array><string>{exe}</string></array>
@@ -1599,9 +1621,10 @@ def cmd_uninstall():
 def cmd_status():
     print("machine:  ", machine_name())
     print("config:   ", tilde(CONFIG))
-    print("root:     ", tilde(ROOT) if ROOT else "(not set: run `wr0te.py install FOLDER`)")
-    for name, path in sorted(ALSO_WATCH.items()):
-        print("also:      %s/ = %s" % (name, path))
+    if not FOLDERS:
+        print("folders:   (none: run `wr0te.py install FOLDER`)")
+    for name, path in FOLDERS:
+        print("folder:    %s%s" % (tilde(path), "  (shown as %s/…)" % name if name else ""))
     print("data:     ", tilde(DATA) if DATA else "—")
     r = subprocess.run(["/bin/launchctl", "print", "gui/%d/%s" % (os.getuid(), LABEL)], capture_output=True, text=True)
     if r.returncode == 0:
@@ -1712,7 +1735,7 @@ def newer_logs_than(path):
 def main(argv):
     os.umask(0o077)  # snapshots and state are private writing: owner-only files
     cmd = argv[1] if len(argv) > 1 else "today"
-    if cmd in ("scan", "auto", "today", "report", "open") and not ROOT:
+    if cmd in ("scan", "auto", "today", "report", "open") and not FOLDERS:
         msg = "no folder to watch yet: run `python3 wr0te.py install FOLDER`"
         if cmd == "auto":
             log_line(msg)
