@@ -1,9 +1,18 @@
 # wr0te
 
-An ambient writing tracker for macOS. Point it at the folder where you keep
-your writing (Markdown, Org or plain text, in any editor). Every 5 minutes it notes
-what changed, then shows how much you actually wrote: per day, per project, per
-file and by hour. Text you pasted in or moved from elsewhere doesn't count.
+An ambient writing tracker for macOS.
+
+I ([Craig Mod](https://craigmod.com)) made this because I find most writing
+software doesn't track words properly, and writing is more messy than just
+adding / deleting words. So much copying / moving / editing is involved. I
+wanted to have a tool that could track all of my writing folders and create a
+historical and accurate reference of how I've written and what I've written
+over time. I hope you find it useful, and if you have a piece of writing
+software, please feel free to integrate our methodologies into your own app.
+
+Point it at the folders where you keep your writing (Markdown, Org or plain
+text, in any editor). Every 5 minutes it notes what changed, then shows how
+much you actually wrote: per day, per project, per file and by hour. Text you pasted in or moved from elsewhere doesn't count.
 
 No editor plugin, no account, no network. Everything stays in files on your Mac
 (or in your own Dropbox, if you write on more than one).
