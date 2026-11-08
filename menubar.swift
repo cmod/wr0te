@@ -15,6 +15,7 @@ let reportFile = local.appendingPathComponent("report.html")
 let requestFile = local.appendingPathComponent("report-request")
 let launcher = home.appendingPathComponent("Applications/wr0te.app")
 let configFile = local.appendingPathComponent("config.json")
+let homePage = URL(string: "https://github.com/cmod/wr0te")!
 
 /// config.json as a dictionary, so keys the panel doesn't show are written back untouched.
 /// nil if it exists but can't be read: better to refuse than to overwrite it.
@@ -191,6 +192,9 @@ final class Bar: NSObject, NSMenuDelegate, UNUserNotificationCenterDelegate {
         report.isEnabled = !building
         menu.addItem(report)
         menu.addItem(.separator())
+        let about = NSMenuItem(title: "About wr0te", action: #selector(openAbout), keyEquivalent: "")
+        about.target = self
+        menu.addItem(about)
         let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
         settings.target = self
         menu.addItem(settings)
@@ -248,6 +252,10 @@ final class Bar: NSObject, NSMenuDelegate, UNUserNotificationCenterDelegate {
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
         completionHandler([.banner, .list])
+    }
+
+    @objc func openAbout() {
+        NSWorkspace.shared.open(homePage)
     }
 
     @objc func updateNow() {
