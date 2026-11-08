@@ -163,8 +163,8 @@ final class Bar: NSObject, NSMenuDelegate, UNUserNotificationCenterDelegate {
                 line(met ? "Goal of \(number(t.goal)) reached" : "\(written * 100 / t.goal)% of \(number(t.goal)) goal")
             }
             let showStreak = readConfig()?["show_streak"] as? Bool ?? true
-            if let d = t.days_30 {
-                line("\(d) of the last 30 days" + (showStreak ? " · streak \(t.streak)" : ""))
+            if showStreak, let d = t.days_30 {
+                line("\(d) of the last 30 days · streak \(t.streak)")
             } else if showStreak {
                 line("Streak: " + plural(t.streak, "day"))
             }
@@ -210,7 +210,9 @@ final class Bar: NSObject, NSMenuDelegate, UNUserNotificationCenterDelegate {
             parts.append(plural(t.files, "file"))
             parts.append("\(minutes(t.active_minutes)) active")
         }
-        if let d = t.days_30 { parts.append("\(d) of the last 30 days") }
+        if let d = t.days_30, readConfig()?["show_streak"] as? Bool ?? true {
+            parts.append("\(d) of the last 30 days")
+        }
         let text = "\(date): " + parts.joined(separator: " · ")
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
@@ -307,7 +309,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     let addRemove = NSSegmentedControl(labels: ["+", "−"], trackingMode: .momentary, target: nil, action: nil)
     let goalField = NSTextField()
     let dayStart = NSPopUpButton()
-    let streakBox = NSButton(checkboxWithTitle: "Show streak in the menu and report", target: nil, action: nil)
+    let streakBox = NSButton(checkboxWithTitle: "Show streak and days written", target: nil, action: nil)
 
     init(config: [String: Any], saved: @escaping () -> Void) {
         self.config = config

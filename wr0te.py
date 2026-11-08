@@ -58,7 +58,7 @@ SETTINGS = {  # name: (default, type); config.json may set any of these
     "day_start_hour": (4, int),       # writing at 2am counts toward the previous day
     "hide_folders": ([], list),       # leading folders left off paths in reports
     "menu_bar": (True, bool),         # show today's words in the menu bar
-    "show_streak": (True, bool),      # the streak in the menu bar and report
+    "show_streak": (True, bool),      # streak and days-written counts in the menu bar and report
 }
 RETIRED = {"split_folders"}  # accepted in old config files, no longer used
 
@@ -806,7 +806,8 @@ def cmd_today(ndays=7):
         print("%-12s %8s %8s %6d  %s" % (d.strftime("%a %m-%d"), "{:,}".format(x["added"]),
                                          "{:,}".format(x["removed"]), len(x["files"]),
                                          fmt_minutes(len(x["slots"]) * SCAN_INTERVAL // 60)))
-    print("streak: %d days" % streak(days, today))
+    if SHOW_STREAK:
+        print("streak: %d days" % streak(days, today))
     todays = [c for c in changes if writing_day(c["m"]) == today and written(c) + removed(c)]
     if todays:
         print("\ntoday:")
@@ -1336,12 +1337,13 @@ def cmd_report(open_it=False, quiet=False):
         if t["moved"] or t["pasted"]:
             bits.append("not counted: {:,} moved, {:,} pasted".format(t["moved"], t["pasted"]))
         h.append('<p class="detail">%s</p>' % " · ".join(bits))
-    written_days = "%d of 30" % days_30
+    stats = [("Last 7 days", "{:,}".format(total(7))), ("Last 30 days", "{:,}".format(total(30))),
+             ("This year", "{:,}".format(ytd))]
     if SHOW_STREAK:
-        written_days += "<small>streak %d · longest %d</small>" % (streak(days, today), longest_streak(days))
+        stats.append(("Days written", "%d of 30<small>streak %d · longest %d</small>"
+                      % (days_30, streak(days, today), longest_streak(days))))
     h.append('<dl class="stats">')
-    for lab, val in (("Last 7 days", "{:,}".format(total(7))), ("Last 30 days", "{:,}".format(total(30))),
-                     ("This year", "{:,}".format(ytd)), ("Days written", written_days)):
+    for lab, val in stats:
         h.append("<div><dt>%s</dt><dd>%s</dd></div>" % (lab, val))
     h.append("</dl></section>")
 
@@ -1379,11 +1381,14 @@ def cmd_report(open_it=False, quiet=False):
     rows, y, m = [], today.year, today.month
     for _ in range(12):
         md = [x for d, x in days.items() if d.year == y and d.month == m]
-        rows.append([dt.date(y, m, 1).strftime("%B %Y"), num(sum(x["added"] for x in md)),
-                     num(sum(1 for x in md if x["added"]))])
+        row = [dt.date(y, m, 1).strftime("%B %Y"), num(sum(x["added"] for x in md))]
+        if SHOW_STREAK:
+            row.append(num(sum(1 for x in md if x["added"])))
+        rows.append(row)
         y, m = (y, m - 1) if m > 1 else (y - 1, 12)
+    cols = [("Month", ""), ("Written", "n")] + ([("Days written", "n")] if SHOW_STREAK else [])
     h.append("<details><summary>Show by month</summary>%s</details></section>" % table(
-        "Words per month, last 12 months", [("Month", ""), ("Written", "n"), ("Days written", "n")], rows))
+        "Words per month, last 12 months", cols, rows))
 
     # ---- projects
     h.append('<section class="block" id="projects"><h2>Projects, last 30 days</h2>'

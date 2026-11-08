@@ -93,7 +93,7 @@ sets `root`; everything else is optional:
 - `day_start_hour`: writing before this hour counts toward the previous day.
 - `hide_folders`: leading folders left off paths in reports
   (`Projects/Novel/ch1.md` shows as `Novel/ch1.md`).
-- `show_streak`: the streak in the menu bar and report.
+- `show_streak`: the streak and days-written counts in the menu bar and report.
 - `menu_bar`: today's words in the menu bar. Run `install` again after changing it.
 
 The menu bar's **Settings…** (⌘,) edits the folders, goal, day start and

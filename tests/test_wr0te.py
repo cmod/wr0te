@@ -243,7 +243,9 @@ class Scanning(Case):
             w.SHOW_STREAK = show
             w.cmd_report(quiet=True)
             with open(os.path.join(w.LOCAL, "report.html")) as f:
-                self.assertEqual("longest" in f.read(), show)
+                page = f.read()
+            self.assertEqual("longest" in page, show)
+            self.assertEqual("Days written" in page, show)
 
     def test_mass_disappearance_waits_an_hour(self):
         for i in range(30):
