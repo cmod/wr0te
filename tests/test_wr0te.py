@@ -27,7 +27,7 @@ COMMON = "the a of and to in is it that was for on with as at by this but from".
 class Case(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="wr0te-test-")
-        self.saved = {k: getattr(w, k) for k in ("LOCAL", "CONFIG", "ROOT", "DATA", "HIDE_FOLDERS", "ALSO_WATCH")}
+        self.saved = {k: getattr(w, k) for k in ("LOCAL", "CONFIG", "ROOT", "DATA", "HIDE_FOLDERS", "ALSO_WATCH", "SHOW_STREAK")}
         w.LOCAL = os.path.join(self.tmp, "local")
         w.CONFIG = os.path.join(w.LOCAL, "config.json")
         w.ROOT = os.path.join(self.tmp, "writing")
@@ -235,6 +235,15 @@ class Scanning(Case):
         changes = w.build_changes(w.load_events())
         self.assertEqual([c["kind"] for c in changes if c["path"] == "notes/old.org"], ["baseline", "edit"])
         self.assertEqual(w.daily(changes)[w.writing_day(time.time())]["added"], 25)
+
+    def test_streak_can_be_hidden(self):
+        self.write("a.md", "# A\n")
+        w.scan(quiet=True)
+        for show in (True, False):
+            w.SHOW_STREAK = show
+            w.cmd_report(quiet=True)
+            with open(os.path.join(w.LOCAL, "report.html")) as f:
+                self.assertEqual("longest" in f.read(), show)
 
     def test_mass_disappearance_waits_an_hour(self):
         for i in range(30):

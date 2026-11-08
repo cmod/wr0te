@@ -58,6 +58,7 @@ SETTINGS = {  # name: (default, type); config.json may set any of these
     "day_start_hour": (4, int),       # writing at 2am counts toward the previous day
     "hide_folders": ([], list),       # leading folders left off paths in reports
     "menu_bar": (True, bool),         # show today's words in the menu bar
+    "show_streak": (True, bool),      # the streak in the menu bar and report
 }
 RETIRED = {"split_folders"}  # accepted in old config files, no longer used
 
@@ -106,6 +107,7 @@ DAILY_GOAL = _cfg["daily_goal"]
 DAY_START_HOUR = _cfg["day_start_hour"]
 HIDE_FOLDERS = _cfg["hide_folders"]
 MENU_BAR = _cfg["menu_bar"]
+SHOW_STREAK = _cfg["show_streak"]
 ALSO_WATCH = _cfg["also_watch"]
 
 TEXT_EXT = {".md", ".markdown", ".mdown", ".txt", ".text", ".fountain", ".org"}
@@ -1334,11 +1336,12 @@ def cmd_report(open_it=False, quiet=False):
         if t["moved"] or t["pasted"]:
             bits.append("not counted: {:,} moved, {:,} pasted".format(t["moved"], t["pasted"]))
         h.append('<p class="detail">%s</p>' % " · ".join(bits))
-    cur, best = streak(days, today), longest_streak(days)
+    written_days = "%d of 30" % days_30
+    if SHOW_STREAK:
+        written_days += "<small>streak %d · longest %d</small>" % (streak(days, today), longest_streak(days))
     h.append('<dl class="stats">')
     for lab, val in (("Last 7 days", "{:,}".format(total(7))), ("Last 30 days", "{:,}".format(total(30))),
-                     ("This year", "{:,}".format(ytd)),
-                     ("Days written", "%d of 30<small>streak %d · longest %d</small>" % (days_30, cur, best))):
+                     ("This year", "{:,}".format(ytd)), ("Days written", written_days)):
         h.append("<div><dt>%s</dt><dd>%s</dd></div>" % (lab, val))
     h.append("</dl></section>")
 

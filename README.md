@@ -79,7 +79,8 @@ sets `root`; everything else is optional:
       "daily_goal": 2000,
       "day_start_hour": 4,
       "hide_folders": ["Projects"],
-      "menu_bar": true
+      "menu_bar": true,
+      "show_streak": true
     }
 
 - `root`: the folder to watch.
@@ -92,9 +93,11 @@ sets `root`; everything else is optional:
 - `day_start_hour`: writing before this hour counts toward the previous day.
 - `hide_folders`: leading folders left off paths in reports
   (`Projects/Novel/ch1.md` shows as `Novel/ch1.md`).
+- `show_streak`: the streak in the menu bar and report.
 - `menu_bar`: today's words in the menu bar. Run `install` again after changing it.
 
-wr0te reads the file every time it runs, so there's nothing to restart. The `WR0TE_ROOT`, `WR0TE_DATA` and
+The menu bar's **Settings…** (⌘,) edits the folders, goal, day start and
+streak without opening the file. wr0te reads the file every time it runs, so there's nothing to restart. The `WR0TE_ROOT`, `WR0TE_DATA` and
 `WR0TE_MACHINE` environment variables override the paths and this Mac's name.
 Tuning constants (typing speed, fingerprint size) are at the top of `wr0te.py`.
 

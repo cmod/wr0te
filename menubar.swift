@@ -3,7 +3,7 @@
 // It only reads files next to the report: today.json, which each background run writes, and
 // notify.json, left when the daily goal is reached so the notification comes from wr0te itself
 // rather than Script Editor. It needs no access to your writing. Open Report asks wr0te.app (which
-// has that access) for a fresh scan and report, then opens it.
+// has that access) for a fresh scan and report, then opens it. Settings edits config.json.
 import AppKit
 import UserNotifications
 
@@ -14,6 +14,30 @@ let notifyFile = local.appendingPathComponent("notify.json")
 let reportFile = local.appendingPathComponent("report.html")
 let requestFile = local.appendingPathComponent("report-request")
 let launcher = home.appendingPathComponent("Applications/wr0te.app")
+let configFile = local.appendingPathComponent("config.json")
+
+/// config.json as a dictionary, so keys the panel doesn't show are written back untouched.
+/// nil if it exists but can't be read: better to refuse than to overwrite it.
+func readConfig() -> [String: Any]? {
+    guard let data = try? Data(contentsOf: configFile) else {
+        return FileManager.default.fileExists(atPath: configFile.path) ? nil : [:]
+    }
+    return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+}
+
+func tilde(_ path: String) -> String {
+    let h = home.path
+    return path == h || path.hasPrefix(h + "/") ? "~" + path.dropFirst(h.count) : path
+}
+
+func expand(_ path: String) -> String {
+    (path as NSString).expandingTildeInPath
+}
+
+/// Folder names in also_watch, as wr0te.py accepts them: one path component, not hidden.
+func validName(_ n: String) -> Bool {
+    !n.isEmpty && !n.hasPrefix(".") && !n.contains("/") && !n.contains("\\")
+}
 
 struct Today: Decodable {
     let day: String
@@ -138,9 +162,10 @@ final class Bar: NSObject, NSMenuDelegate, UNUserNotificationCenterDelegate {
             if t.goal > 0 {
                 line(met ? "Goal of \(number(t.goal)) reached" : "\(written * 100 / t.goal)% of \(number(t.goal)) goal")
             }
+            let showStreak = readConfig()?["show_streak"] as? Bool ?? true
             if let d = t.days_30 {
-                line("\(d) of the last 30 days · streak \(t.streak)")
-            } else {
+                line("\(d) of the last 30 days" + (showStreak ? " · streak \(t.streak)" : ""))
+            } else if showStreak {
                 line("Streak: " + plural(t.streak, "day"))
             }
             let updated = NSMenuItem(title: "Updated " + dayFormatter("HH:mm").string(from: Date(timeIntervalSince1970: t.updated)),
@@ -161,6 +186,9 @@ final class Bar: NSObject, NSMenuDelegate, UNUserNotificationCenterDelegate {
         report.isEnabled = !building
         menu.addItem(report)
         menu.addItem(.separator())
+        let settings = NSMenuItem(title: "Settings…", action: #selector(openSettings), keyEquivalent: ",")
+        settings.target = self
+        menu.addItem(settings)
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
     }
 
@@ -216,6 +244,11 @@ final class Bar: NSObject, NSMenuDelegate, UNUserNotificationCenterDelegate {
     }
 
     @objc func openReport() {
+        rebuild { NSWorkspace.shared.open(reportFile) }
+    }
+
+    /// Ask wr0te.app for a scan and a fresh report and today.json, then run `done`.
+    func rebuild(then done: @escaping () -> Void = {}) {
         building = true
         refresh()
         // wr0te.app takes no arguments; this file tells its run to rebuild the report.
@@ -230,13 +263,290 @@ final class Bar: NSObject, NSMenuDelegate, UNUserNotificationCenterDelegate {
             DispatchQueue.main.async {
                 self.building = false
                 self.refresh()
-                NSWorkspace.shared.open(reportFile)
+                done()
             }
         }
     }
+
+    var settingsWindow: SettingsWindow?
+
+    @objc func openSettings() {
+        NSApp.activate(ignoringOtherApps: true)
+        if let w = settingsWindow {
+            w.window.makeKeyAndOrderFront(nil)
+            return
+        }
+        guard let config = readConfig() else {
+            let alert = NSAlert()
+            alert.messageText = "Can't read settings"
+            alert.informativeText = "\(tilde(configFile.path)) isn't valid JSON. Fix or delete it, then try again."
+            alert.runModal()
+            return
+        }
+        let w = SettingsWindow(config: config) { [weak self] in self?.rebuild() }
+        w.onClose = { [weak self] in self?.settingsWindow = nil }
+        settingsWindow = w
+        w.window.center()
+        w.window.makeKeyAndOrderFront(nil)
+    }
+}
+
+/// The Settings window: the folders to watch, the daily goal, when the day starts, the streak.
+/// Saving writes config.json, which wr0te.py reads on its next run.
+final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, NSTableViewDelegate {
+    let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 400),
+                          styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    var config: [String: Any]
+    var root: String?
+    var extras: [(name: String, path: String)]
+    let saved: () -> Void
+    var onClose: () -> Void = {}
+
+    let rootLabel = NSTextField(labelWithString: "")
+    let table = NSTableView()
+    let addRemove = NSSegmentedControl(labels: ["+", "−"], trackingMode: .momentary, target: nil, action: nil)
+    let goalField = NSTextField()
+    let dayStart = NSPopUpButton()
+    let streakBox = NSButton(checkboxWithTitle: "Show streak in the menu and report", target: nil, action: nil)
+
+    init(config: [String: Any], saved: @escaping () -> Void) {
+        self.config = config
+        self.saved = saved
+        root = config["root"] as? String
+        extras = ((config["also_watch"] as? [String: String]) ?? [:]).sorted { $0.key < $1.key }
+            .map { (name: $0.key, path: $0.value) }
+        super.init()
+        window.title = "wr0te Settings"
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        build()
+    }
+
+    func build() {
+        func label(_ s: String) -> NSTextField {
+            let l = NSTextField(labelWithString: s)
+            l.alignment = .right
+            return l
+        }
+        func note(_ s: String) -> NSTextField {
+            let l = NSTextField(wrappingLabelWithString: s)
+            l.preferredMaxLayoutWidth = 390
+            l.font = .systemFont(ofSize: NSFont.smallSystemFontSize)
+            l.textColor = .secondaryLabelColor
+            return l
+        }
+        func button(_ title: String, _ action: Selector) -> NSButton {
+            let b = NSButton(title: title, target: self, action: action)
+            b.bezelStyle = .rounded
+            return b
+        }
+
+        rootLabel.stringValue = root ?? "(none)"
+        rootLabel.lineBreakMode = .byTruncatingMiddle
+        rootLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let rootRow = NSStackView(views: [rootLabel, button("Choose…", #selector(chooseRoot))])
+
+        for (id, title, width) in [("name", "Name", 110.0), ("path", "Folder", 270.0)] {
+            let col = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id))
+            col.title = title
+            col.width = CGFloat(width)
+            col.isEditable = id == "name"
+            table.addTableColumn(col)
+        }
+        table.dataSource = self
+        table.delegate = self
+        table.usesAlternatingRowBackgroundColors = true
+        let scroll = NSScrollView()
+        scroll.documentView = table
+        scroll.hasVerticalScroller = true
+        scroll.borderType = .bezelBorder
+        scroll.translatesAutoresizingMaskIntoConstraints = false
+        scroll.heightAnchor.constraint(equalToConstant: 110).isActive = true
+        scroll.widthAnchor.constraint(equalToConstant: 390).isActive = true
+        addRemove.target = self
+        addRemove.action = #selector(addOrRemove)
+        let extrasBox = NSStackView(views: [scroll, addRemove,
+                                            note("Files show up in reports as name/…. Double-click a name to change it.")])
+        extrasBox.orientation = .vertical
+        extrasBox.alignment = .leading
+
+        let fmt = NumberFormatter()
+        fmt.allowsFloats = false
+        fmt.minimum = 0
+        fmt.maximum = 1_000_000
+        goalField.formatter = fmt
+        goalField.integerValue = config["daily_goal"] as? Int ?? 2000
+        goalField.translatesAutoresizingMaskIntoConstraints = false
+        goalField.widthAnchor.constraint(equalToConstant: 80).isActive = true
+        let goalRow = NSStackView(views: [goalField, NSTextField(labelWithString: "words a day (0 for none)")])
+
+        for h in 0..<12 {
+            dayStart.addItem(withTitle: h == 0 ? "Midnight" : "\(h):00 am")
+        }
+        dayStart.selectItem(at: min(max(config["day_start_hour"] as? Int ?? 4, 0), 11))
+        let dayRow = NSStackView(views: [dayStart, note("Writing before then counts toward the day before.")])
+
+        streakBox.state = (config["show_streak"] as? Bool ?? true) ? .on : .off
+
+        let grid = NSGridView(views: [
+            [label("Writing folder:"), rootRow],
+            [label("Also watch:"), extrasBox],
+            [label("Daily goal:"), goalRow],
+            [label("Day starts at:"), dayRow],
+            [NSGridCell.emptyContentView, streakBox],
+        ])
+        grid.rowSpacing = 14
+        grid.columnSpacing = 10
+        grid.rowAlignment = .firstBaseline
+        grid.row(at: 1).rowAlignment = .none
+        grid.cell(atColumnIndex: 0, rowIndex: 1).yPlacement = .top
+
+        let cancel = button("Cancel", #selector(cancel))
+        cancel.keyEquivalent = "\u{1b}"
+        let save = button("Save", #selector(save))
+        save.keyEquivalent = "\r"
+        let spacer = NSView()
+        spacer.setContentHuggingPriority(.init(1), for: .horizontal)
+        let buttons = NSStackView(views: [spacer, cancel, save])
+
+        let all = NSStackView(views: [grid, buttons])
+        all.orientation = .vertical
+        all.alignment = .leading
+        all.spacing = 20
+        buttons.widthAnchor.constraint(equalTo: grid.widthAnchor).isActive = true
+        all.translatesAutoresizingMaskIntoConstraints = false
+        let content = NSView()
+        content.addSubview(all)
+        NSLayoutConstraint.activate([
+            all.topAnchor.constraint(equalTo: content.topAnchor, constant: 20),
+            all.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
+            all.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 20),
+            all.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -20),
+        ])
+        window.contentView = content
+        window.setContentSize(content.fittingSize)
+    }
+
+    func pickFolders(multiple: Bool) -> [URL] {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = multiple
+        panel.prompt = "Watch"
+        return panel.runModal() == .OK ? panel.urls : []
+    }
+
+    @objc func chooseRoot() {
+        guard let url = pickFolders(multiple: false).first else { return }
+        root = tilde(url.path)
+        rootLabel.stringValue = root!
+    }
+
+    @objc func addOrRemove() {
+        if addRemove.selectedSegment == 1 {
+            let row = table.selectedRow
+            if row >= 0 {
+                extras.remove(at: row)
+                table.reloadData()
+            }
+            return
+        }
+        for url in pickFolders(multiple: true) {
+            var base = url.lastPathComponent
+            while base.hasPrefix(".") { base.removeFirst() }
+            if !validName(base) { base = "folder" }
+            var name = base, n = 2
+            while extras.contains(where: { $0.name == name }) {
+                name = "\(base)-\(n)"
+                n += 1
+            }
+            extras.append((name: name, path: tilde(url.path)))
+        }
+        table.reloadData()
+    }
+
+    func numberOfRows(in tableView: NSTableView) -> Int {
+        extras.count
+    }
+
+    func tableView(_ tableView: NSTableView, objectValueFor col: NSTableColumn?, row: Int) -> Any? {
+        col?.identifier.rawValue == "name" ? extras[row].name : extras[row].path
+    }
+
+    func tableView(_ tableView: NSTableView, setObjectValue value: Any?, for col: NSTableColumn?, row: Int) {
+        let name = ((value as? String) ?? "").trimmingCharacters(in: .whitespaces)
+        if validName(name) && !extras.enumerated().contains(where: { $0.offset != row && $0.element.name == name }) {
+            extras[row].name = name
+        } else {
+            NSSound.beep()
+        }
+        tableView.reloadData()
+    }
+
+    @objc func cancel() {
+        window.close()
+    }
+
+    @objc func save() {
+        window.makeFirstResponder(nil)  // commit a name or goal still being edited
+        guard let fresh = readConfig() else { return }
+        var c = fresh  // reread, in case the file changed while the window was open
+        if let r = root, r != c["root"] as? String {
+            // History defaults to wr0te-data next to the folder; keep it where it is.
+            if c["data"] == nil, let old = c["root"] as? String {
+                let oldRoot = URL(fileURLWithPath: expand(old)).standardizedFileURL
+                c["data"] = tilde(oldRoot.deletingLastPathComponent().appendingPathComponent("wr0te-data").path)
+            }
+            c["root"] = r
+        }
+        c["also_watch"] = Dictionary(uniqueKeysWithValues: extras.map { ($0.name, $0.path) })
+        c["daily_goal"] = goalField.integerValue
+        c["day_start_hour"] = dayStart.indexOfSelectedItem
+        c["show_streak"] = streakBox.state == .on
+        do {
+            let data = try JSONSerialization.data(withJSONObject: c,
+                                                  options: [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes])
+            try FileManager.default.createDirectory(at: local, withIntermediateDirectories: true)
+            try (data + Data("\n".utf8)).write(to: configFile, options: .atomic)
+        } catch {
+            NSAlert(error: error).runModal()
+            return
+        }
+        window.close()
+        saved()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        onClose()
+    }
+}
+
+/// Accessory apps have no menu bar, but text fields still need ⌘X/⌘C/⌘V/⌘A/⌘Z to work.
+func editMenu() -> NSMenu {
+    let main = NSMenu()
+    let edit = NSMenu(title: "Edit")
+    for (title, action, key) in [("Undo", Selector(("undo:")), "z"), ("Redo", Selector(("redo:")), "Z"),
+                                 ("Cut", #selector(NSText.cut(_:)), "x"), ("Copy", #selector(NSText.copy(_:)), "c"),
+                                 ("Paste", #selector(NSText.paste(_:)), "v"),
+                                 ("Select All", #selector(NSText.selectAll(_:)), "a")] {
+        edit.addItem(NSMenuItem(title: title, action: action, keyEquivalent: key))
+    }
+    let item = NSMenuItem()
+    item.submenu = edit
+    main.addItem(item)
+    let close = NSMenu(title: "Window")
+    close.addItem(NSMenuItem(title: "Close", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w"))
+    let closeItem = NSMenuItem()
+    closeItem.submenu = close
+    main.addItem(closeItem)
+    return main
 }
 
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
+app.mainMenu = editMenu()
 let bar = Bar()
+if CommandLine.arguments.contains("--settings") {  // open the window at launch, e.g. to try it out
+    DispatchQueue.main.async { bar.openSettings() }
+}
 app.run()
