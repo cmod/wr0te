@@ -1288,6 +1288,22 @@ document.querySelectorAll('.scroll[data-end]').forEach(s=>{s.scrollLeft=s.scroll
 """
 
 
+def history_size():
+    """What the history takes up: every saved version plus the logs. For the menu bar's Settings,
+    which can't look inside Dropbox itself."""
+    out = {"path": tilde(DATA), "versions": 0, "bytes": 0}
+    for sub in ("snapshots", "logs"):
+        for dirpath, _, names in os.walk(os.path.join(DATA, sub)):
+            for n in names:
+                try:
+                    out["bytes"] += os.lstat(os.path.join(dirpath, n)).st_size
+                except OSError:
+                    continue
+                if sub == "snapshots" and n.endswith(".gz"):
+                    out["versions"] += 1
+    return out
+
+
 def cmd_report(open_it=False, quiet=False):
     changes = build_changes(load_events())
     pending = os.path.join(LOCAL, "report-pending")  # some versions couldn't be read yet
@@ -1495,7 +1511,8 @@ def cmd_report(open_it=False, quiet=False):
     write_atomic(os.path.join(LOCAL, "today.json"), json.dumps({  # what the menu bar shows
         "day": today.isoformat(), "day_start_hour": DAY_START_HOUR, "written": t["added"],
         "removed": t["removed"], "files": len(t["files"]), "active_minutes": active(t),
-        "streak": streak(days, today), "days_30": days_30, "goal": DAILY_GOAL, "updated": now}).encode())
+        "streak": streak(days, today), "days_30": days_30, "goal": DAILY_GOAL, "updated": now,
+        "history": history_size()}).encode())
     if not quiet:
         print(out)
     if open_it:

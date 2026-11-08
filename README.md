@@ -190,9 +190,11 @@ Everything except `config.json` and `wr0te-data` can be deleted and rebuilt.
   somewhere only you can write to. Releases are tagged: check out the latest
   tag rather than following `main`, and read what changed before you move to a
   newer one.
-- The menu bar app (`menubar.swift`) needs no permissions. It only reads
-  `today.json`, which each background run writes next to the report, and
-  Open Report asks `wr0te.app` to do the scan.
+- The menu bar app (`menubar.swift`) needs no permissions. It reads
+  `today.json`, which each background run writes next to the report (with the
+  size of your history, since the app can't look inside Dropbox), and writes
+  only `config.json`, from Settings. Open Report and Update Now ask
+  `wr0te.app` to do the scan.
 - Logs arriving from other Macs are checked (hash format, types, ranges)
   before use. Snapshot reads are size-capped, and data and state files are
   readable only by you.

@@ -51,6 +51,13 @@ struct Today: Decodable {
     let days_30: Int?
     let goal: Int
     let updated: Double
+    let history: History?
+}
+
+struct History: Decodable {
+    let path: String
+    let versions: Int
+    let bytes: Int
 }
 
 struct Note: Decodable {
@@ -325,6 +332,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
     let dontCount = NSTokenField()
     let goalField = NSTextField()
     let dayStart = NSPopUpButton()
+    var historyPath: String?
     let streakBox = NSButton(checkboxWithTitle: "Show streak and days written", target: nil, action: nil)
 
     init(config: [String: Any], saved: @escaping () -> Void) {
@@ -422,12 +430,29 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
 
         streakBox.state = (config["show_streak"] as? Bool ?? true) ? .on : .off
 
+        // Measured by the background job, which (unlike this app) can look inside Dropbox.
+        let history = (try? Data(contentsOf: todayFile))
+            .flatMap { try? JSONDecoder().decode(Today.self, from: $0) }?.history
+        let historyText = history.map {
+            "\(plural($0.versions, "saved version")) · "
+                + ByteCountFormatter.string(fromByteCount: Int64($0.bytes), countStyle: .file)
+                + " in \($0.path)"
+        } ?? "Not measured yet"
+        let historyLabel = NSTextField(labelWithString: historyText)
+        historyLabel.lineBreakMode = .byTruncatingMiddle
+        historyLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let finder = button("Show in Finder", #selector(showHistory))
+        finder.isEnabled = history != nil
+        historyPath = history.map { expand($0.path) }
+        let historyRow = NSStackView(views: [historyLabel, finder])
+
         let grid = NSGridView(views: [
             [label("Folders to watch:"), folderBox],
             [label("Don't count:"), dontCountBox],
             [label("Daily goal:"), goalRow],
             [label("Day starts at:"), dayRow],
             [NSGridCell.emptyContentView, streakBox],
+            [label("History:"), historyRow],
         ])
         grid.rowSpacing = 14
         grid.columnSpacing = 10
@@ -470,6 +495,11 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         panel.allowsMultipleSelection = multiple
         panel.prompt = "Watch"
         return panel.runModal() == .OK ? panel.urls : []
+    }
+
+    @objc func showHistory() {
+        guard let p = historyPath else { return }
+        NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: p)])
     }
 
     /// A folder inside one of the watched ones, added as its path the way reports show it.
