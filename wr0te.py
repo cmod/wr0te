@@ -27,25 +27,20 @@ Commands:
     wr0te.py status      show agent status and last scans
 """
 
-import csv
 import datetime as dt
-import difflib
 import fnmatch
 import gzip
 import hashlib
-import html
 import json
 import os
 import re
-import socket
-import sqlite3
 import stat
 import subprocess
 import sys
-import tempfile
 import time
-import unicodedata
 from collections import Counter, defaultdict
+# csv, difflib, html, socket, sqlite3 and unicodedata are imported where they're used: most
+# background runs find nothing new and shouldn't pay to load them.
 
 # ---------------------------------------------------------------- settings ---
 
@@ -189,6 +184,7 @@ def machine_name():
         try:
             name = subprocess.check_output(["/usr/sbin/scutil", "--get", "LocalHostName"], text=True).strip()
         except (OSError, subprocess.CalledProcessError):
+            import socket
             name = socket.gethostname().split(".")[0]
     return re.sub(r"[^A-Za-z0-9_-]", "-", name)
 
@@ -196,7 +192,8 @@ def machine_name():
 def write_atomic(path, data):
     d = os.path.dirname(path)
     os.makedirs(d, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=d, prefix=".tmp-")  # random name, O_EXCL: never follows a planted link
+    tmp = os.path.join(d, ".tmp-" + os.urandom(8).hex())
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)  # never follows a planted link
     try:
         with os.fdopen(fd, "wb") as f:
             f.write(data)
@@ -290,7 +287,12 @@ def scan(quiet=False):
         del files[rel]
     fresh = {p for p, f in folders if known.get(p) != f}
     first = not known
-    last_scan = None if first else state.get("last_scan")
+    last_scan = None
+    if not first:
+        try:
+            last_scan = max(state.get("last_scan") or 0, os.path.getmtime(looked_file())) or None
+        except OSError:
+            last_scan = state.get("last_scan")
 
     # Likewise files of a type wr0te has just started watching: they were already there.
     new_ext = () if first else tuple(sorted(TEXT_EXT - set(state.get("ext", FIRST_TEXT_EXT))))
@@ -377,6 +379,7 @@ def scan(quiet=False):
     state.pop("also", None)
     state["last_scan"] = now
     write_atomic(state_file, json.dumps(state).encode())
+    touch(looked_file(), now)
     msg = "scan: %d files, %d events%s (%.2fs)" % (
         len(seen), len(events), " [baseline]" if first else "", time.time() - now)
     log_line(msg)
@@ -460,6 +463,7 @@ def valid_event(ev):
 
 def diff_chunks(a, b):
     """Inserted and removed runs of tokens between two texts, in document order."""
+    import difflib
     al, bl = a.splitlines(), b.splitlines()
     ins, rem = [], []
     if len(al) + len(bl) > 40000:  # enormous files: skip the line diff, go straight to the fallback
@@ -576,6 +580,7 @@ class Archive:
     appeared) plus each version-to-version result. Rebuildable from snapshots; never synced."""
 
     def __init__(self):
+        import sqlite3
         os.makedirs(LOCAL, exist_ok=True)
         self.db = sqlite3.connect(os.path.join(LOCAL, "archive.db"))
         self.db.execute("CREATE TABLE IF NOT EXISTS fp (h INTEGER PRIMARY KEY, t REAL) WITHOUT ROWID")
@@ -899,6 +904,7 @@ def bar_path(x, y0, w, h, up=True, r=4):
 
 
 def esc(s):
+    import html
     return html.escape(str(s), quote=True)
 
 
@@ -913,6 +919,7 @@ def active(x):
 
 def text_units(s):
     """Rough rendered width in Latin letters: CJK and other wide characters count two."""
+    import unicodedata
     return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 1 for ch in s)
 
 
@@ -1501,6 +1508,7 @@ def cmd_report(open_it=False, quiet=False):
 
     out = os.path.join(LOCAL, "report.html")
     write_atomic(out, "\n".join(h).encode())
+    import csv
     with open(os.path.join(LOCAL, "daily.csv"), "w", newline="") as f:
         wr = csv.writer(f)
         wr.writerow(["day", "written", "removed", "cjk_written", "moved", "pasted", "files", "active_minutes"])
@@ -1607,6 +1615,7 @@ def unload_agent(label):
 
 
 def cmd_install(folder=None):
+    import html
     global FOLDERS, DATA
     if folder:
         folder = os.path.abspath(os.path.expanduser(folder))
@@ -1682,8 +1691,42 @@ def cmd_status():
         pass
 
 
+def nothing_new_here(now):
+    """True if nobody has touched this Mac since it last looked, so a scan couldn't find anything
+    typed here. Most runs during a day are like this; skipping them is most of wr0te's CPU saved.
+    Still scans at least hourly (other programs, changes synced in), at the start of a writing day,
+    and whenever the menu bar asks. Input must have stopped 2 minutes before the last look, so an
+    editor's late autosave isn't missed."""
+    if os.path.exists(os.path.join(LOCAL, "report-request")):
+        return False
+    try:
+        looked = os.path.getmtime(looked_file())
+        scanned = os.path.getmtime(os.path.join(LOCAL, "state.json"))
+        report = os.path.getmtime(os.path.join(LOCAL, "report.html"))
+    except OSError:
+        return False
+    if now - scanned > 3600 or writing_day(report) != writing_day(now):
+        return False
+    return idle_seconds() > now - looked + 120
+
+
+def looked_file():
+    """Its time is when this Mac last looked: a scan, or an idle run that skipped one."""
+    return os.path.join(LOCAL, "looked")
+
+
+def touch(path, t):
+    with open(path, "a"):
+        pass
+    os.utime(path, (t, t))
+
+
 def cmd_auto():
     """What launchd runs: scan, and refresh the local report if anything changed."""
+    now = time.time()
+    if nothing_new_here(now):
+        touch(looked_file(), now)  # nothing typed here up to now, which keeps paste detection tight
+        return
     try:
         n = scan(quiet=True)
         report = os.path.join(LOCAL, "report.html")

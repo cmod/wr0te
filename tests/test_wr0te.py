@@ -299,6 +299,32 @@ class Scanning(Case):
                              ("Essays/old/a.md", False), ("Book/ch1.md", False)):
             self.assertEqual(w.dont_count(path), expect, path)
 
+    def test_idle_runs_skip_the_scan(self):
+        self.write("a.md", "# A\n")
+        w.scan(quiet=True)
+        w.cmd_report(quiet=True)
+        saved = w.idle_seconds
+        try:
+            now = time.time() + 300
+            w.idle_seconds = lambda: 3600  # untouched for an hour
+            self.assertTrue(w.nothing_new_here(now))
+            w.idle_seconds = lambda: 30  # typed half a minute ago
+            self.assertFalse(w.nothing_new_here(now))
+            w.idle_seconds = lambda: 3600
+            open(os.path.join(w.LOCAL, "report-request"), "w").close()  # the menu asked
+            self.assertFalse(w.nothing_new_here(now))
+            os.remove(os.path.join(w.LOCAL, "report-request"))
+            self.assertFalse(w.nothing_new_here(now + 3600))  # an hour since a real scan
+
+            w.idle_seconds = lambda: 3600
+            w.cmd_auto()  # skipped, but counts as having looked
+            looked = os.path.getmtime(w.looked_file())
+            self.write("a.md", "# A\n\n" + self.prose(30))
+            w.scan(quiet=True)
+            self.assertEqual(w.load_events()[-1]["ps"], round(looked))
+        finally:
+            w.idle_seconds = saved
+
     def test_mass_disappearance_waits_an_hour(self):
         for i in range(30):
             self.write("f%d.md" % i, "file %d\n" % i)
