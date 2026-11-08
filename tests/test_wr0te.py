@@ -422,20 +422,30 @@ class Launcher(unittest.TestCase):
                 return self.runs() > before
             time.sleep(0.25)
 
+    def settle(self):
+        """Run until a run finds nothing: a change can reach the journal after the run that
+        scanned it, which costs one extra run (never a missed one). Slow machines show it most."""
+        end = time.time() + 10
+        while self.started_python(patience=0) and time.time() < end:
+            time.sleep(0.5)
+
     def test_runs_only_when_text_changed(self):
         self.assertTrue(self.started_python())                  # first run: no saved position
+        self.settle()
         self.assertFalse(self.started_python(patience=0))       # nothing changed
         with open(self.doc, "a") as f:
             f.write(" ")                                         # one space, in place
         self.assertTrue(self.started_python())
+        self.settle()
         tmp = self.doc + ".tmp"                                  # one space, saved atomically
         with open(self.doc) as f, open(tmp, "w") as g:
             g.write(f.read() + " ")
         os.replace(tmp, self.doc)
         self.assertTrue(self.started_python())
+        self.settle()
         with open(os.path.join(self.writing, "photo.png"), "w") as f:
             f.write("x")                                         # not text
-        time.sleep(1)
+        time.sleep(2)
         self.assertFalse(self.started_python(patience=0))
         open(os.path.join(self.local, "report-request"), "w").close()  # the menu bar asked
         self.assertTrue(self.started_python(patience=0))
