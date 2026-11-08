@@ -27,7 +27,7 @@ COMMON = "the a of and to in is it that was for on with as at by this but from".
 class Case(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="wr0te-test-")
-        self.saved = {k: getattr(w, k) for k in ("LOCAL", "CONFIG", "FOLDERS", "DATA", "HIDE_FOLDERS", "SHOW_STREAK")}
+        self.saved = {k: getattr(w, k) for k in ("LOCAL", "CONFIG", "FOLDERS", "DATA", "HIDE_FOLDERS", "SHOW_STREAK", "DONT_COUNT")}
         w.LOCAL = os.path.join(self.tmp, "local")
         w.CONFIG = os.path.join(w.LOCAL, "config.json")
         self.root = os.path.join(self.tmp, "writing")
@@ -274,6 +274,30 @@ class Scanning(Case):
         evs = w.load_events()
         self.assertFalse([e for e in evs if e["e"] == "d"])
         self.assertEqual([e.get("base") for e in evs], [1, 1])
+
+    def test_dont_count_folders(self):
+        w.DONT_COUNT = ["*backup*", "Book/Misc"]
+        self.write("Book/ch1.md", "# One\n")
+        self.write("Book/Misc/notes.md", "# Notes\n")
+        w.scan(quiet=True)
+        notes = self.prose(60)
+        self.write("Book/Misc/notes.md", "# Notes\n\n" + notes + "\n")
+        w.scan(quiet=True)
+        self.write("Book/ch1.md", "# One\n\n" + notes + "\n")  # the note, moved into the book
+        w.scan(quiet=True)
+        changes = w.build_changes(w.load_events())
+        day = w.daily(changes)[w.writing_day(time.time())]
+        self.assertLess(day["added"], 5)  # a word or two at the edges of a move can slip through
+        self.assertEqual(day["notes"], 60)
+        self.assertGreater([c for c in changes if c["path"] == "Book/ch1.md"][-1]["mv"], 50)
+
+    def test_dont_count_matching(self):
+        w.DONT_COUNT = ["*backup*", "misc", "Essays/Drafts/old"]
+        for path, expect in (("Book/Backup — Pre 3rd Person/a.md", True), ("Backups, misc/a.md", True),
+                             ("Book/MISC/a.md", True), ("Book/miscellany/a.md", False), ("misc.md", False),
+                             ("Essays/Drafts/old/a.md", True), ("Essays/Drafts/old/x/a.md", True),
+                             ("Essays/old/a.md", False), ("Book/ch1.md", False)):
+            self.assertEqual(w.dont_count(path), expect, path)
 
     def test_mass_disappearance_waits_an_hour(self):
         for i in range(30):

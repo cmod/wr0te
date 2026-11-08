@@ -80,6 +80,7 @@ sets the first folder; everything else is optional:
       "data": "~/Dropbox/wr0te-data",
       "daily_goal": 2000,
       "day_start_hour": 4,
+      "dont_count": ["*backup*", "misc"],
       "hide_folders": ["Projects"],
       "menu_bar": true,
       "show_streak": true
@@ -94,6 +95,11 @@ sets the first folder; everything else is optional:
   without a name.
 - `daily_goal`: words for the daily notification. `0` turns it off.
 - `day_start_hour`: writing before this hour counts toward the previous day.
+- `dont_count`: folders whose writing isn't counted, like notes or backups.
+  Their files are still tracked, so text moved out of them is recognized as
+  moved. A rule without a slash matches folder names anywhere (`misc`,
+  `*backup*`); one with a slash matches a folder's path as reports show it
+  (`Novel/Research`). Case doesn't matter.
 - `hide_folders`: leading folders left off paths in reports
   (`Projects/Novel/ch1.md` shows as `Novel/ch1.md`).
 - `show_streak`: the streak and days-written counts in the menu bar and report.

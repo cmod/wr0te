@@ -314,6 +314,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
 
     let table = NSTableView()
     let addRemove = NSSegmentedControl(labels: ["+", "−"], trackingMode: .momentary, target: nil, action: nil)
+    let dontCount = NSTokenField()
     let goalField = NSTextField()
     let dayStart = NSPopUpButton()
     let streakBox = NSButton(checkboxWithTitle: "Show streak and days written", target: nil, action: nil)
@@ -383,6 +384,18 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         folderBox.orientation = .vertical
         folderBox.alignment = .leading
 
+        dontCount.objectValue = config["dont_count"] as? [String] ?? []
+        dontCount.placeholderString = "*backup*, misc"
+        dontCount.translatesAutoresizingMaskIntoConstraints = false
+        dontCount.widthAnchor.constraint(equalToConstant: 390).isActive = true
+        let dontCountBox = NSStackView(views: [
+            dontCount, button("Add Folder…", #selector(addDontCountFolder)),
+            note("Writing in these folders is still tracked, so moves out of them are recognized, but it "
+                 + "isn't counted. A name like misc or *backup* matches folders anywhere, at any depth."),
+        ])
+        dontCountBox.orientation = .vertical
+        dontCountBox.alignment = .leading
+
         let fmt = NumberFormatter()
         fmt.allowsFloats = false
         fmt.minimum = 0
@@ -403,6 +416,7 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
 
         let grid = NSGridView(views: [
             [label("Folders to watch:"), folderBox],
+            [label("Don't count:"), dontCountBox],
             [label("Daily goal:"), goalRow],
             [label("Day starts at:"), dayRow],
             [NSGridCell.emptyContentView, streakBox],
@@ -410,8 +424,10 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         grid.rowSpacing = 14
         grid.columnSpacing = 10
         grid.rowAlignment = .firstBaseline
-        grid.row(at: 0).rowAlignment = .none
-        grid.cell(atColumnIndex: 0, rowIndex: 0).yPlacement = .top
+        for row in 0...1 {
+            grid.row(at: row).rowAlignment = .none
+            grid.cell(atColumnIndex: 0, rowIndex: row).yPlacement = .top
+        }
 
         let cancel = button("Cancel", #selector(cancel))
         cancel.keyEquivalent = "\u{1b}"
@@ -446,6 +462,25 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
         panel.allowsMultipleSelection = multiple
         panel.prompt = "Watch"
         return panel.runModal() == .OK ? panel.urls : []
+    }
+
+    /// A folder inside one of the watched ones, added as its path the way reports show it.
+    @objc func addDontCountFolder() {
+        guard let url = pickFolders(multiple: false).first else { return }
+        let picked = url.resolvingSymlinksInPath().path
+        for f in folders {
+            let base = URL(fileURLWithPath: expand(f.path)).resolvingSymlinksInPath().path
+            guard picked.hasPrefix(base + "/") else { continue }
+            let rel = String(picked.dropFirst(base.count + 1))
+            var rules = dontCount.objectValue as? [String] ?? []
+            rules.append(f.name.isEmpty ? rel : f.name + "/" + rel)
+            dontCount.objectValue = rules
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "That folder isn't inside one you're watching"
+        alert.informativeText = "Choose a folder inside one of the folders to watch."
+        alert.runModal()
     }
 
     @objc func addOrRemove() {
@@ -511,6 +546,8 @@ final class SettingsWindow: NSObject, NSWindowDelegate, NSTableViewDataSource, N
             c["data"] = tilde(dir.appendingPathComponent("wr0te-data").path)
         }
         c["folders"] = folders.map { $0.name.isEmpty ? ["path": $0.path] : ["name": $0.name, "path": $0.path] }
+        c["dont_count"] = (dontCount.objectValue as? [String] ?? [])
+            .map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
         c.removeValue(forKey: "root")
         c.removeValue(forKey: "also_watch")
         c["daily_goal"] = goalField.integerValue

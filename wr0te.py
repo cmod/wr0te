@@ -30,6 +30,7 @@ Commands:
 import csv
 import datetime as dt
 import difflib
+import fnmatch
 import gzip
 import hashlib
 import html
@@ -59,6 +60,7 @@ SETTINGS = {  # name: (default, type); config.json may set any of these
     "day_start_hour": (4, int),       # writing at 2am counts toward the previous day
     "hide_folders": ([], list),       # leading folders left off paths in reports
     "menu_bar": (True, bool),         # show today's words in the menu bar
+    "dont_count": ([], list),         # folders whose writing isn't counted: names ("*backup*") or paths
     "show_streak": (True, bool),      # streak and days-written counts in the menu bar and report
 }
 RETIRED = {"split_folders"}  # accepted in old config files, no longer used
@@ -128,6 +130,7 @@ FOLDERS, DATA = resolve_paths(_cfg)
 DAILY_GOAL = _cfg["daily_goal"]
 DAY_START_HOUR = _cfg["day_start_hour"]
 HIDE_FOLDERS = _cfg["hide_folders"]
+DONT_COUNT = _cfg["dont_count"]
 MENU_BAR = _cfg["menu_bar"]
 SHOW_STREAK = _cfg["show_streak"]
 
@@ -738,6 +741,8 @@ def build_changes(evs):
                 r = classify(archive, prev, ev, obs, kind)
             if kind == "baseline":
                 r = zero
+            if kind in ("new", "edit") and dont_count(ev["p"]):
+                kind = "notes"  # still classified and indexed above, so text moved out of it is known
             c = {"path": ev["p"], "m": ev["m"], "kind": kind, "by": ev.get("by", "?"),
                  "w": ev["w"], "k": ev["k"]}
             c.update(r)
@@ -767,6 +772,20 @@ def project_labels(projects):
     return {p: leaf[p] if names[leaf[p]] == 1 else p for p in projects}
 
 
+def dont_count(path):
+    """Is this file inside a folder whose writing doesn't count? A rule without a slash matches any
+    folder's name, at any depth; one with a slash matches a folder's whole path. Case doesn't matter."""
+    dirs = path.lower().split("/")[:-1]
+    for rule in DONT_COUNT:
+        rule = rule.lower().strip("/")
+        if "/" in rule:
+            if any(fnmatch.fnmatchcase("/".join(dirs[:i]), rule) for i in range(1, len(dirs) + 1)):
+                return True
+        elif any(fnmatch.fnmatchcase(d, rule) for d in dirs):
+            return True
+    return False
+
+
 def counted(c):
     return c["kind"] in ("new", "edit")
 
@@ -781,8 +800,10 @@ def removed(c):
 
 def daily(changes):
     days = defaultdict(lambda: {"added": 0, "removed": 0, "words": 0, "cjk": 0, "moved": 0, "pasted": 0,
-                                "files": set(), "slots": set()})
+                                "notes": 0, "files": set(), "slots": set()})
     for c in changes:
+        if c["kind"] == "notes":
+            days[writing_day(c["m"])]["notes"] += c["aw"] + c["ak"]
         if not counted(c):
             continue
         d = days[writing_day(c["m"])]
@@ -835,6 +856,9 @@ def cmd_today(ndays=7):
             per[c["path"]][1] += removed(c)
         for p, (a, r) in sorted(per.items(), key=lambda kv: -kv[1][0]):
             print("  +%-6d -%-6d %s" % (a, r, shown(p)))
+    notes = days[today]["notes"] if today in days else 0
+    if notes:
+        print("\nnot counted: %s words in don't-count folders" % "{:,}".format(notes))
 
 
 def fmt_minutes(m):
@@ -1274,7 +1298,7 @@ def cmd_report(open_it=False, quiet=False):
     days = daily(changes)
     now = time.time()
     today = writing_day(now)
-    empty_day = {"added": 0, "removed": 0, "files": set(), "slots": set(), "cjk": 0, "moved": 0, "pasted": 0}
+    empty_day = {"added": 0, "removed": 0, "files": set(), "slots": set(), "cjk": 0, "moved": 0, "pasted": 0, "notes": 0}
     t = days.get(today, empty_day)
 
     def total(since_days):
@@ -1352,8 +1376,9 @@ def cmd_report(open_it=False, quiet=False):
                 % (fmt_minutes(active(t)), SCAN_INTERVAL // 60)]
         if t["removed"]:
             bits.append("{:,} removed".format(t["removed"]))
-        if t["moved"] or t["pasted"]:
-            bits.append("not counted: {:,} moved, {:,} pasted".format(t["moved"], t["pasted"]))
+        skipped = [("moved", t["moved"]), ("pasted", t["pasted"]), ("in don't-count folders", t["notes"])]
+        if any(n for _, n in skipped):
+            bits.append("not counted: " + ", ".join("{:,} {}".format(n, what) for what, n in skipped if n))
         h.append('<p class="detail">%s</p>' % " · ".join(bits))
     stats = [("Last 7 days", "{:,}".format(total(7))), ("Last 30 days", "{:,}".format(total(30))),
              ("This year", "{:,}".format(ytd))]
