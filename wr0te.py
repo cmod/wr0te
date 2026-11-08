@@ -1576,7 +1576,8 @@ def build_app(script):
     src = os.path.join(os.path.dirname(script), "launcher.c")
     with open(src, "rb") as f:
         build_id = hashlib.sha256(f.read() + script.encode()).hexdigest()
-    return build_bundle(APP, "com.wr0te.agent", ["/usr/bin/clang", "-O2", "-DSCRIPT=%s" % json.dumps(script), src],
+    return build_bundle(APP, "com.wr0te.agent", ["/usr/bin/clang", "-O2", "-DSCRIPT=%s" % json.dumps(script),
+                                                 "-framework", "CoreServices", src],
                         build_id, "LSBackgroundOnly")
 
 
@@ -1691,25 +1692,6 @@ def cmd_status():
         pass
 
 
-def nothing_new_here(now):
-    """True if nobody has touched this Mac since it last looked, so a scan couldn't find anything
-    typed here. Most runs during a day are like this; skipping them is most of wr0te's CPU saved.
-    Still scans at least hourly (other programs, changes synced in), at the start of a writing day,
-    and whenever the menu bar asks. Input must have stopped 2 minutes before the last look, so an
-    editor's late autosave isn't missed."""
-    if os.path.exists(os.path.join(LOCAL, "report-request")):
-        return False
-    try:
-        looked = os.path.getmtime(looked_file())
-        scanned = os.path.getmtime(os.path.join(LOCAL, "state.json"))
-        report = os.path.getmtime(os.path.join(LOCAL, "report.html"))
-    except OSError:
-        return False
-    if now - scanned > 3600 or writing_day(report) != writing_day(now):
-        return False
-    return idle_seconds() > now - looked + 120
-
-
 def looked_file():
     """Its time is when this Mac last looked: a scan, or an idle run that skipped one."""
     return os.path.join(LOCAL, "looked")
@@ -1721,12 +1703,23 @@ def touch(path, t):
     os.utime(path, (t, t))
 
 
+def write_watch(retry_soon):
+    """Tell the launcher (launcher.c) what to watch, so it can skip runs with nothing to do: text
+    files in these folders, any other Mac's log, and when to run regardless (a new writing day,
+    a few hours at most, or right away if this run left something unfinished)."""
+    now = time.time()
+    next_day = dt.datetime.combine(writing_day(now) + dt.timedelta(days=1), dt.time(DAY_START_HOUR))
+    due = 0 if retry_soon else min(int(next_day.timestamp()), int(now) + 3 * 3600)
+    lines = ["due %d" % due] + ["ext %s" % e for e in sorted(TEXT_EXT)]
+    lines += ["folder %s" % os.path.realpath(f) for _, f in FOLDERS]
+    logs = os.path.realpath(os.path.join(DATA, "logs"))
+    lines += ["any %s" % logs, "ignore %s" % os.path.join(logs, machine_name())]
+    write_atomic(os.path.join(LOCAL, "watch"), ("\n".join(lines) + "\n").encode())
+
+
 def cmd_auto():
     """What launchd runs: scan, and refresh the local report if anything changed."""
-    now = time.time()
-    if nothing_new_here(now):
-        touch(looked_file(), now)  # nothing typed here up to now, which keeps paste detection tight
-        return
+    retry_soon = True
     try:
         n = scan(quiet=True)
         report = os.path.join(LOCAL, "report.html")
@@ -1739,11 +1732,14 @@ def cmd_auto():
         waiting = os.path.exists(os.path.join(LOCAL, "report-pending"))
         if n or stale or requested or waiting or newer_logs_than(report):
             check_goal(cmd_report(quiet=True))
+        retry_soon = os.path.exists(os.path.join(LOCAL, "report-pending"))
     except LogUnavailable as e:  # the report is left as it was and retried next run
         log_line("waiting for log to sync: %s" % e)
     except Exception as e:  # keep the agent alive; the log has the reason
         log_line("error: %r" % (e,))
         raise
+    finally:
+        write_watch(retry_soon)
 
 
 def idle_seconds():

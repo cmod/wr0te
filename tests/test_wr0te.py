@@ -10,9 +10,11 @@ import os
 import random
 import shutil
 import sys
+import subprocess
 import tempfile
 import time
 import unittest
+from collections import defaultdict
 
 # Settings load when wr0te is imported, so point it at an empty place first.
 os.environ["WR0TE_LOCAL"] = tempfile.mkdtemp(prefix="wr0te-test-")
@@ -284,6 +286,7 @@ class Scanning(Case):
         self.write("Book/Misc/notes.md", "# Notes\n\n" + notes + "\n")
         w.scan(quiet=True)
         self.write("Book/ch1.md", "# One\n\n" + notes + "\n")  # the note, moved into the book
+        self.touch("Book/ch1.md", ahead=2)  # saved after the note, not in the same instant
         w.scan(quiet=True)
         changes = w.build_changes(w.load_events())
         day = w.daily(changes)[w.writing_day(time.time())]
@@ -299,31 +302,20 @@ class Scanning(Case):
                              ("Essays/old/a.md", False), ("Book/ch1.md", False)):
             self.assertEqual(w.dont_count(path), expect, path)
 
-    def test_idle_runs_skip_the_scan(self):
+    def test_auto_leaves_a_watch_list_for_the_launcher(self):
         self.write("a.md", "# A\n")
-        w.scan(quiet=True)
-        w.cmd_report(quiet=True)
-        saved = w.idle_seconds
-        try:
-            now = time.time() + 300
-            w.idle_seconds = lambda: 3600  # untouched for an hour
-            self.assertTrue(w.nothing_new_here(now))
-            w.idle_seconds = lambda: 30  # typed half a minute ago
-            self.assertFalse(w.nothing_new_here(now))
-            w.idle_seconds = lambda: 3600
-            open(os.path.join(w.LOCAL, "report-request"), "w").close()  # the menu asked
-            self.assertFalse(w.nothing_new_here(now))
-            os.remove(os.path.join(w.LOCAL, "report-request"))
-            self.assertFalse(w.nothing_new_here(now + 3600))  # an hour since a real scan
-
-            w.idle_seconds = lambda: 3600
-            w.cmd_auto()  # skipped, but counts as having looked
-            looked = os.path.getmtime(w.looked_file())
-            self.write("a.md", "# A\n\n" + self.prose(30))
-            w.scan(quiet=True)
-            self.assertEqual(w.load_events()[-1]["ps"], round(looked))
-        finally:
-            w.idle_seconds = saved
+        w.cmd_auto()
+        with open(os.path.join(w.LOCAL, "watch")) as f:
+            rules = [line.split(" ", 1) for line in f.read().splitlines()]
+        got = defaultdict(list)
+        for k, v in rules:
+            got[k].append(v)
+        self.assertEqual(got["folder"], [os.path.realpath(self.root)])
+        self.assertIn(".md", got["ext"])
+        self.assertEqual(got["any"], [os.path.realpath(os.path.join(w.DATA, "logs"))])
+        self.assertEqual(got["ignore"], [os.path.join(got["any"][0], "test")])
+        due = int(got["due"][0])
+        self.assertTrue(time.time() < due <= time.time() + 3 * 3600 + 1)
 
     def test_mass_disappearance_waits_an_hour(self):
         for i in range(30):
@@ -386,6 +378,67 @@ class Goal(Case):
             self.assertEqual(calls, ["/usr/bin/osascript"])
         finally:
             w.menu_bar_running, w.subprocess.call, w.MENU_BAR = saved
+
+
+@unittest.skipUnless(sys.platform == "darwin" and os.path.exists("/usr/bin/clang"), "macOS launcher")
+class Launcher(unittest.TestCase):
+    """The real launcher.c, with a stand-in for wr0te.py that only notes each time it's started."""
+
+    def setUp(self):
+        self.tmp = os.path.realpath(tempfile.mkdtemp(prefix="wr0te-launcher-"))
+        self.local = os.path.join(self.tmp, "Library", "Application Support", "wr0te")
+        self.writing = os.path.join(self.tmp, "writing")
+        os.makedirs(self.local)
+        os.makedirs(self.writing)
+        stub = os.path.join(self.tmp, "stub.py")
+        with open(stub, "w") as f:
+            f.write("import os\nopen(os.path.join(os.environ['HOME'], 'runs'), 'a').write('run\\n')\n")
+        src = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "launcher.c")
+        self.exe = os.path.join(self.tmp, "launcher")
+        subprocess.check_call(["/usr/bin/clang", "-O2", "-DSCRIPT=%s" % json.dumps(stub),
+                               "-framework", "CoreServices", src, "-o", self.exe])
+        with open(os.path.join(self.local, "watch"), "w") as f:
+            f.write("due 9999999999\next .md\nfolder %s\n" % self.writing)
+        self.doc = os.path.join(self.writing, "a.md")
+        with open(self.doc, "w") as f:
+            f.write("# A\n")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp)
+
+    def runs(self):
+        try:
+            with open(os.path.join(self.tmp, "runs")) as f:
+                return len(f.readlines())
+        except OSError:
+            return 0
+
+    def started_python(self, patience=5.0):
+        """Run the launcher (again, while the change reaches the journal) until it starts wr0te.py."""
+        before, end = self.runs(), time.time() + patience
+        while True:
+            subprocess.check_call([self.exe], env={"HOME": self.tmp})
+            if self.runs() > before or time.time() > end:
+                return self.runs() > before
+            time.sleep(0.25)
+
+    def test_runs_only_when_text_changed(self):
+        self.assertTrue(self.started_python())                  # first run: no saved position
+        self.assertFalse(self.started_python(patience=0))       # nothing changed
+        with open(self.doc, "a") as f:
+            f.write(" ")                                         # one space, in place
+        self.assertTrue(self.started_python())
+        tmp = self.doc + ".tmp"                                  # one space, saved atomically
+        with open(self.doc) as f, open(tmp, "w") as g:
+            g.write(f.read() + " ")
+        os.replace(tmp, self.doc)
+        self.assertTrue(self.started_python())
+        with open(os.path.join(self.writing, "photo.png"), "w") as f:
+            f.write("x")                                         # not text
+        time.sleep(1)
+        self.assertFalse(self.started_python(patience=0))
+        open(os.path.join(self.local, "report-request"), "w").close()  # the menu bar asked
+        self.assertTrue(self.started_python(patience=0))
 
 
 class Settings(Case):

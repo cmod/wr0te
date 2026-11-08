@@ -41,8 +41,15 @@ standard library.
     python3 wr0te.py status
 
 `install` saves the folder in your settings, builds a tiny launcher app in
-`~/Applications/wr0te.app`, starts a background job that scans every 5
+`~/Applications/wr0te.app`, starts a background job that checks every 5
 minutes, and adds a pencil to the menu bar.
+
+Most checks find nothing to do and cost almost nothing. The launcher asks
+macOS's journal of file changes (FSEvents) whether any text file in your
+folders, or another Mac's log, changed since the last scan, and only starts
+Python if one did. An edit of a single character counts. It also scans at the
+start of each writing day, at least every 3 hours, and whenever you use Update
+Now or Open Report.
 
 macOS protects some folders: Dropbox and other cloud folders, Documents and
 Desktop. Opening `wr0te.app` once lets macOS ask for access to yours. If
