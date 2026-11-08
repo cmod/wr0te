@@ -121,15 +121,21 @@ func scriptNotification(_ note: Note) {
     try? p.run()
 }
 
-/// The day's goal as 100 small boxes (4 rows of 25), each 1% of it, filling in as you write. The box
-/// you're on fills partway, so it moves even between whole percents.
+/// The report's warm accent (--s1), in light and dark.
+let warm = NSColor(name: nil) { appearance in
+    appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+        ? NSColor(srgbRed: 0xe4 / 255.0, green: 0x7c / 255.0, blue: 0x55 / 255.0, alpha: 1)
+        : NSColor(srgbRed: 0xc2 / 255.0, green: 0x56 / 255.0, blue: 0x2f / 255.0, alpha: 1)
+}
+
+/// The day's goal as 100 small boxes (4 rows of 25), each 1% of it, filling in as you write.
 final class GoalBoxes: NSView {
     static let count = 100, perRow = 25
     static let size: CGFloat = 8, gap: CGFloat = 2, inset: CGFloat = 14, pad: CGFloat = 6
-    let filled: Double  // in boxes, 0...100
+    let filled: Int  // whole boxes, 0...100
 
     init(written: Int, goal: Int) {
-        filled = min(Double(written) / Double(max(goal, 1)) * Double(Self.count), Double(Self.count))
+        filled = min(written * Self.count / max(goal, 1), Self.count)
         let rows = Self.count / Self.perRow
         let width = Self.inset * 2 + CGFloat(Self.perRow) * Self.size + CGFloat(Self.perRow - 1) * Self.gap
         let height = Self.pad * 2 + CGFloat(rows) * Self.size + CGFloat(rows - 1) * Self.gap
@@ -148,16 +154,8 @@ final class GoalBoxes: NSView {
             let col = CGFloat(i % Self.perRow), row = CGFloat(i / Self.perRow)
             let box = NSRect(x: Self.inset + col * (Self.size + Self.gap), y: Self.pad + row * (Self.size + Self.gap),
                              width: Self.size, height: Self.size)
-            let shape = NSBezierPath(roundedRect: box, xRadius: 1.5, yRadius: 1.5)
-            NSColor.quaternaryLabelColor.setFill()
-            shape.fill()
-            let part = min(max(filled - Double(i), 0), 1)
-            guard part > 0 else { continue }
-            NSGraphicsContext.saveGraphicsState()
-            shape.addClip()
-            NSColor.controlAccentColor.setFill()
-            NSRect(x: box.minX, y: box.minY, width: box.width * CGFloat(part), height: box.height).fill()
-            NSGraphicsContext.restoreGraphicsState()
+            (i < filled ? warm : NSColor.quaternaryLabelColor).setFill()
+            NSBezierPath(roundedRect: box, xRadius: 1.5, yRadius: 1.5).fill()
         }
     }
 }
