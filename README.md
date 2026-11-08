@@ -2,7 +2,7 @@
 
 An ambient writing tracker for macOS.
 
-I ([Craig Mod](https://craigmod.com)) made this because I find most writing
+I ([Craig Mod](https://craigmod.com/about)) made this because I find most writing
 software doesn't track words properly, and writing is more messy than just
 adding / deleting words. So much copying / moving / editing is involved. I
 wanted to have a tool that could track all of my writing folders and create a
