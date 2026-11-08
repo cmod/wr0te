@@ -8,7 +8,9 @@ import AppKit
 import UserNotifications
 
 let home = FileManager.default.homeDirectoryForCurrentUser
-let local = home.appendingPathComponent("Library/Application Support/wr0te")
+// WR0TE_LOCAL points it elsewhere, as it does wr0te.py (for trying things out, or screenshots).
+let local = ProcessInfo.processInfo.environment["WR0TE_LOCAL"].map { URL(fileURLWithPath: $0) }
+    ?? home.appendingPathComponent("Library/Application Support/wr0te")
 let todayFile = local.appendingPathComponent("today.json")
 let notifyFile = local.appendingPathComponent("notify.json")
 let reportFile = local.appendingPathComponent("report.html")

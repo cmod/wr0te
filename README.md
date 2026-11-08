@@ -85,6 +85,8 @@ the menu bar app, the notification comes from Script Editor instead.
 
 ## Settings
 
+<img src="docs/settings.png" width="727" alt="wr0te's Settings window, with made-up folders and numbers">
+
 Settings live in `~/Library/Application Support/wr0te/config.json`. `install`
 sets the first folder; everything else is optional:
 
