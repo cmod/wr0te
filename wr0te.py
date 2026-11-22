@@ -1581,15 +1581,21 @@ def build_app(script):
                         build_id, "LSBackgroundOnly")
 
 
+MENU_MIN_MACOS = "13.0"
+
+
 def build_menu_app(script):
     """Compile menubar.swift into ~/Applications/wr0te-menu.app. It reads only files in LOCAL and
     asks wr0te.app for scans, so it needs no permissions of its own and can be rebuilt freely."""
     here = os.path.dirname(script)
     src, icon = os.path.join(here, "menubar.swift"), os.path.join(here, "assets", "wr0te.icns")
+    # swiftc otherwise targets the macOS version it guesses from the kernel, which can be newer
+    # than the real one; macOS then refuses to open the app (error -10825).
+    target = "%s-apple-macos%s" % (os.uname().machine, MENU_MIN_MACOS)
     with open(src, "rb") as f, open(icon, "rb") as g:
-        build_id = hashlib.sha256(f.read() + b"\0name:wr0te\0" + g.read()).hexdigest()
-    exe, _ = build_bundle(MENU_APP, "com.wr0te.menu", ["/usr/bin/swiftc", "-O", src], build_id, "LSUIElement",
-                          "wr0te", icon)
+        build_id = hashlib.sha256(f.read() + b"\0name:wr0te\0" + g.read() + target.encode()).hexdigest()
+    exe, _ = build_bundle(MENU_APP, "com.wr0te.menu", ["/usr/bin/swiftc", "-O", "-target", target, src],
+                          build_id, "LSUIElement", "wr0te", icon)
     # launchd starts it without LaunchServices; register it so Notifications and Focus settings list it as wr0te.
     subprocess.call([LSREGISTER, "-f", MENU_APP], stderr=subprocess.DEVNULL)
     return exe
@@ -1648,6 +1654,8 @@ def cmd_install(folder=None):
 """.format(exe=html.escape(exe), env=env, interval=SCAN_INTERVAL, local=html.escape(LOCAL)))
     print("installed %s — scanning %s every %d min"
           % (LABEL, ", ".join(tilde(f) for _, f in FOLDERS), SCAN_INTERVAL // 60))
+    # A copy opened by hand isn't launchd's to stop, and the new one would defer to it.
+    subprocess.call(["/usr/bin/pkill", "-x", "wr0te-menu"])
     if MENU_BAR:
         # Quitting from the menu exits cleanly, which keeps it quit until the next login.
         load_agent(MENU_LABEL, """  <key>ProgramArguments</key><array><string>{exe}</string></array>

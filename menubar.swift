@@ -694,6 +694,13 @@ func editMenu() -> NSMenu {
     return main
 }
 
+// Opening the app while launchd's copy runs would put a second wr0te in the menu bar.
+let me = ProcessInfo.processInfo.processIdentifier
+if NSRunningApplication.runningApplications(withBundleIdentifier: "com.wr0te.menu")
+    .contains(where: { $0.processIdentifier != me }) {
+    exit(0)
+}
+
 let app = NSApplication.shared
 app.setActivationPolicy(.accessory)
 app.mainMenu = editMenu()
